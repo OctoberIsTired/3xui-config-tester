@@ -5,6 +5,7 @@ import copy
 import itertools
 import json
 import statistics
+import httpx
 from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -12,7 +13,7 @@ from typing import Any, Callable
 from urllib.parse import urlparse
 
 from app.api.base import PanelClient
-from app.api.three_xui import PanelAPIError
+from app.api.three_xui import PanelAPIError, ThreeXUIClient
 from app.config import ExperimentConfig, offline_warnings
 from app.inbound.manager import InboundManager
 from app.parameters.generator import Combination, CombinationGenerator, configuration_hash
@@ -22,9 +23,13 @@ from app.security.masking import mask_parameter_values, mask_secrets
 from app.state.checkpoint import Checkpoint
 from app.xray.client import XrayClient, XrayClientError, categorize_xray_logs
 from app.xray.config_builder import ClientConfigBuilder
-from app.xray.reality import (RealityCredentials, RealityProfile, prepare_reality_inbound,
-                              resolve_profile, stream_settings, validate_pair)
+from app.xray.reality import (RealityCredentials, RealityProfile, configured_candidates, parse_candidates,
+                              prepare_reality_inbound, profile_of, resolve_profile, stream_settings, validate_pair)
+from app.xray.validation import ClientConfigValidator, check_client_config
 from app.testing.measurements import MeasurementSuite
+
+# ML-DSA-65 pins need a long certificate chain; shorter ones cannot carry the key.
+MIN_MLDSA_CERT_CHAIN_BYTES = 3500
 
 
 def prepare_inbound_payload(payload: dict[str, Any], values: dict[str, Any]) -> dict[str, Any]:
@@ -83,7 +88,9 @@ class ExperimentRunner:
     def __init__(self, config: ExperimentConfig, panel: PanelClient,
                  progress_callback: Callable[[dict[str, Any]], None] | None = None):
         self.config, self.panel = config, panel
-        self.generator = CombinationGenerator(config.parameters)
+        self.generator = CombinationGenerator(config.search_parameters())
+        self._usable_candidates: list[dict[str, str]] = []
+        self._reality_scan_rejected: list[str] = []
         self.stop_requested = False
         self.progress_callback = progress_callback
         self._last_inbound_payload_hash: str | None = None
@@ -91,6 +98,59 @@ class ExperimentRunner:
         self._reality_profile: RealityProfile | None = None
         self._reality_profile_error: str | None = None
         self._reality_credentials: RealityCredentials | None = None
+        # Xray itself decides whether a client config can be built; the local
+        # binary answers per unique config, structurally identical to the
+        # process the runner would start next.
+        self._config_validator = ClientConfigValidator(
+            str(self.config.testing.get("xray_binary", "xray")),
+            enabled=bool(self.config.testing.get("validate_config", True)),
+            timeout=float(self.config.timeouts.get("xray_config_test", 15)),
+            config_directory=self.config.output_dir / ".xray-runtime",
+        )
+
+    async def _scan_candidates(self, candidates: list[dict[str, str]],
+                               source: dict[str, Any]) -> tuple[list[dict[str, str]], list[str]]:
+        """Probe every target on the panel; return the usable ones and why the rest were dropped."""
+        if not callable(getattr(self.panel, "scan_reality_target", None)):
+            raise PanelAPIError("Panel does not provide scanRealityTarget")
+        openapi = getattr(self.panel, "openapi", None)
+        if openapi is not None and "post" not in openapi.get("paths", {}).get(
+                ThreeXUIClient.REALITY_SCAN_PATH, {}):
+            raise PanelAPIError("Panel OpenAPI lacks scanRealityTarget")
+        settings = stream_settings(source).get("realitySettings") or {}
+        if isinstance(settings, str):
+            settings = json.loads(settings)
+        xver = int(settings.get("xver", 0)) if isinstance(settings, dict) else 0
+        has_mldsa = isinstance(settings, dict) and bool(settings.get("mldsa65Seed"))
+        semaphore = asyncio.Semaphore(4)
+
+        async def scan(item: dict[str, str]) -> tuple[dict[str, str], dict[str, Any]]:
+            async with semaphore:
+                try:
+                    result = await self.panel.scan_reality_target(item["target"], item["server_name"], xver)
+                except (httpx.HTTPError, PanelAPIError) as error:
+                    result = {"feasible": False, "reason": f"panel probe failed: {type(error).__name__}: {error}"}
+                return item, result
+
+        responses = await asyncio.gather(*(scan(item) for item in candidates))
+        usable: list[dict[str, str]] = []
+        rejected: list[str] = []
+        for item, result in responses:
+            chain_bytes = int(result.get("certChainBytes", 0) or 0)
+            if (result.get("feasible") is True and result.get("privateTarget") is not True
+                    and (not has_mldsa or chain_bytes >= MIN_MLDSA_CERT_CHAIN_BYTES)):
+                usable.append(item)
+                continue
+            if result.get("reason"):
+                reason = str(result["reason"])
+            elif result.get("privateTarget"):
+                reason = "private target"
+            elif has_mldsa and chain_bytes < MIN_MLDSA_CERT_CHAIN_BYTES:
+                reason = "certificate chain too short for ML-DSA-65"
+            else:
+                reason = "not feasible"
+            rejected.append(f"{item['target']} / {item['server_name']}: {reason}")
+        return usable, rejected
 
     def request_stop(self) -> None:
         self.stop_requested = True
@@ -118,34 +178,76 @@ class ExperimentRunner:
         self.config.output_dir.mkdir(parents=True, exist_ok=True)
         if not self.config.testing.get("urls"):
             raise ValueError("testing.urls is required for a non-dry run")
+        # Probe the local binary once, before any inbound is touched: a config
+        # the core would reject must never reach the panel.
+        self._config_validator.availability()
         return {"openapi_version": openapi.get("info", {}).get("version"), "xray_version": status.get("xray", {}).get("version"),
                 "source": source, "manager": manager}
 
     async def run(self, *, dry_run: bool = False, resume: bool = False, max_tests: int | None = None) -> dict[str, Any]:
         prepared = await self.preflight()
         manager: InboundManager = prepared["manager"]
+        checkpoint_path = self.config.output_dir / "state.json"
+        resume_checkpoint = Checkpoint.load(checkpoint_path) if resume else None
+        if resume and resume_checkpoint is None:
+            raise FileNotFoundError(f"--resume requested but {checkpoint_path} does not exist")
         self._reality_profile, self._reality_profile_error = resolve_profile(self.config.testing, prepared["source"])
+        candidates = configured_candidates(self.config.testing, self.config.source_path)
+        if candidates:
+            available, rejected = await self._scan_candidates(candidates, prepared["source"])
+            self._reality_scan_rejected = rejected
+            saved = resume_checkpoint.metadata.get("reality_candidates") if resume_checkpoint else None
+            if saved is not None:
+                previous = parse_candidates({"targets": saved})
+                if any(item not in available for item in previous):
+                    raise ValueError("Previously accepted REALITY target is unavailable; retry --resume later")
+                self._usable_candidates = previous
+            else:
+                self._usable_candidates = available
+            if not self._usable_candidates:
+                reasons = "; ".join(self._reality_scan_rejected[:3])
+                raise ValueError(f"No REALITY targets passed the server-side feasibility check: {reasons}")
+            self._reality_profile = profile_of(self._usable_candidates[0])
+            self._reality_profile_error = None
+            self.generator = CombinationGenerator(
+                self.config.search_parameters(self._usable_candidates),
+                protocol=str(prepared["source"].get("protocol", "")),
+                source_stream=stream_settings(prepared["source"]),
+            )
+        else:
+            self.generator = CombinationGenerator(self.config.parameters,
+                protocol=str(prepared["source"].get("protocol", "")),
+                source_stream=stream_settings(prepared["source"]))
         server_address = str(self.config.testing.get("server_address") or urlparse(self.config.panel["url"]).hostname or "")
         warnings = self._warnings()
         configured_limit = self.config.max_combinations
         effective_limit = min(max_tests, configured_limit) if max_tests is not None else configured_limit
         if self.config.combination_strategy == "mutation":
-            planned = self.generator.mutations()
+            plan = self.generator.mutations()
             combinations = iter(())
-            preview = planned[:min(10, effective_limit)]
+            preview = plan[:min(10, effective_limit)]
             planned_count = effective_limit
+            dry_run_candidates = plan[:effective_limit]
         elif self.config.combination_strategy == "pairwise":
-            planned = self.generator.pairwise()
-            combinations = iter(planned[:effective_limit])
-            preview = planned[:min(10, effective_limit)]
-            planned_count = min(len(planned), effective_limit)
+            plan = self.generator.pairwise()
+            combinations = iter(plan[:effective_limit])
+            preview = plan[:min(10, effective_limit)]
+            planned_count = min(len(plan), effective_limit)
+            dry_run_candidates = plan[:effective_limit]
         else:
-            combinations = itertools.islice(self.generator.iter_valid(), effective_limit)
-            preview = list(itertools.islice(self.generator.iter_valid(), min(10, effective_limit)))
-            planned_count = min(self.generator.raw_count, effective_limit)
+            # One pass over the generator: the plan is needed as candidates, for the
+            # preview and for the count, and each pass re-normalizes every candidate.
+            plan = list(itertools.islice(self.generator.iter_valid(), effective_limit))
+            combinations = iter(plan)
+            preview = plan[:min(10, effective_limit)]
+            planned_count = len(plan)
+            dry_run_candidates = plan
+        if self.progress_callback:
+            self.progress_callback({"planned_combinations": planned_count,
+                                    "planned_runs": planned_count * self.config.runs_per_combination,
+                                    "warnings": warnings})
         if dry_run:
-            candidates = (planned[:effective_limit] if self.config.combination_strategy != "exhaustive" else
-                          list(itertools.islice(self.generator.iter_valid(), effective_limit)))
+            candidates = dry_run_candidates
             # Only mutation seeds are knowable before the adaptive search runs.
             placeholders = RealityCredentials("A" * 43, "B" * 43, "0123456789abcdef")
             self._reality_credentials = placeholders
@@ -164,19 +266,18 @@ class ExperimentRunner:
         if manager.mode == "existing" and not self.config.inbound.get("allow_existing", False):
             raise PermissionError("existing mode requires inbound.allow_existing: true")
         store = ResultStore(self.config.output_dir)
-        checkpoint_path = self.config.output_dir / "state.json"
-        checkpoint = Checkpoint.load(checkpoint_path) if resume else None
-        if resume and checkpoint is None:
-            raise FileNotFoundError(f"--resume requested but {checkpoint_path} does not exist")
+        checkpoint = resume_checkpoint
         experiment_id = checkpoint.experiment_id if checkpoint else datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         search_signature = self._search_signature()
         checkpoint = checkpoint or Checkpoint(experiment_id, {"started_at": datetime.now(UTC).isoformat(),
             "three_xui_version": prepared["openapi_version"], "xray_version": prepared["xray_version"],
             "source_inbound_id": manager.source_id, "search_signature": search_signature})
+        if self._usable_candidates:
+            checkpoint.metadata["reality_candidates"] = self._usable_candidates
         if resume and checkpoint.metadata.get("search_signature") not in {None, search_signature}:
             raise ValueError("The configuration changed since this checkpoint; refusing an inconsistent resume")
         credentials_path = self.config.output_dir / ".reality-credentials.json"
-        if self._reality_profile:
+        if self._reality_profile or self._usable_candidates:
             if resume:
                 if checkpoint.metadata.get("reality_credentials"):
                     self._reality_credentials = RealityCredentials.load(credentials_path, experiment_id)
@@ -360,6 +461,12 @@ class ExperimentRunner:
 
     def _warnings(self) -> list[str]:
         warnings = offline_warnings(self.config)
+        if (state := self._config_validator.availability()) is not None:
+            warnings.append(
+                f"The local Xray config check is unavailable ({state}); client configs are checked "
+                "structurally only and some candidates may still be rejected at Xray startup."
+            )
+        warnings.extend(self._reality_scan_rejected)
         if self._reality_profile_error:
             warnings = [item for item in warnings if not item.startswith("REALITY is selected")]
             warnings.append(f"REALITY candidates will be skipped: {self._reality_profile_error}.")
@@ -374,17 +481,27 @@ class ExperimentRunner:
     def _candidate_payload(self, values: dict[str, Any], base_payload: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
         try:
             payload = prepare_inbound_payload(
-                apply_mapping(base_payload, values, self.config.parameters), values,
+                apply_mapping(base_payload, values, self.generator.parameters), values,
             )
             if stream_settings(payload).get("security", "none") == "reality":
-                if self._reality_profile is None:
+                candidate = values.get("reality_profile")
+                profile = profile_of(candidate) if isinstance(candidate, dict) else self._reality_profile
+                if profile is None:
                     return None, self._reality_profile_error or "reality_target_or_sni_missing"
                 if self._reality_credentials is None:
                     return None, "reality_credentials_missing"
-                payload = prepare_reality_inbound(payload, self._reality_profile, self._reality_credentials)
+                payload = prepare_reality_inbound(payload, profile, self._reality_credentials)
             return payload, None
         except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError):
             return None, "inbound_mapping_invalid"
+
+    def _config_reason(self, client_config: dict[str, Any]) -> str | None:
+        """Reject a client config before Xray is asked to connect with it."""
+        reason = check_client_config(client_config)
+        if reason:
+            return reason
+        checked, core_reason = self._config_validator.check(client_config)
+        return core_reason if checked else None
 
     def _candidate_error(self, values: dict[str, Any], base_payload: dict[str, Any], server_address: str) -> str | None:
         payload, reason = self._candidate_payload(values, base_payload)
@@ -392,8 +509,11 @@ class ExperimentRunner:
             return reason
         assert payload is not None
         try:
-            client_config = self._builder(server_address).build(values, self.config.parameters, payload)
+            client_config = self._builder(server_address).build(values, self.generator.parameters, payload)
             reason = validate_pair(payload, client_config)
+            if reason:
+                return reason
+            reason = self._config_reason(client_config)
             if reason:
                 return reason
             if stream_settings(payload).get("security") == "reality" and self._reality_credentials:
@@ -437,7 +557,7 @@ class ExperimentRunner:
         return None
 
     def _public_values(self, values: dict[str, Any]) -> dict[str, Any]:
-        return mask_parameter_values(values, self.config.parameters)
+        return mask_parameter_values(values, self.generator.parameters)
 
     def _redact_result(self, value: Any) -> Any:
         secrets_to_hide = [str(self.config.panel.get(key, "")) for key in ("api_token", "password")]
@@ -525,10 +645,16 @@ class ExperimentRunner:
                 raise CandidateValidationError(readback_error)
             transport = str(stream_settings(current).get("network", "tcp"))
             builder = self._builder(server_address)
-            client_config = builder.build(values, self.config.parameters, current)
+            client_config = builder.build(values, self.generator.parameters, current)
             pair_error = validate_pair(current, client_config)
             if pair_error:
                 raise CandidateValidationError(pair_error)
+            # The readback config is the one that would be started: check it
+            # here as well, so a rejected config is a validation result rather
+            # than a failed connection attempt.
+            config_error = self._config_reason(client_config)
+            if config_error:
+                raise CandidateValidationError(config_error)
             client = XrayClient(str(self.config.testing.get("xray_binary", "xray")), float(self.config.timeouts.get("xray_start", 15)),
                                 config_directory=self.config.output_dir / ".xray-runtime")
             try:
@@ -711,20 +837,23 @@ class ExperimentRunner:
         return selected
 
     def _payload_hash(self, base_payload: dict[str, Any], values: dict[str, Any]) -> str:
-        return configuration_hash(apply_mapping(base_payload, values, self.config.parameters))
+        return configuration_hash({"inbound": apply_mapping(base_payload, values, self.generator.parameters),
+                                   "reality_profile": values.get("reality_profile")})
 
     def _search_signature(self) -> str:
         parameters = [{"name": item.name, "target": item.target, "path": list(item.path),
                        "values": list(item.iter_values()), "conditions": item.conditions,
                        "value_conditions": list(item.value_conditions), "baseline": item.baseline,
                        "baseline_defined": item.baseline_defined, "mutate": item.mutate}
-                      for item in self.config.parameters]
+                      for item in self.generator.parameters]
         testing = {key: self.config.testing.get(key) for key in (
             "combination_strategy", "mutation_generations", "beam_width", "children_per_parent",
             "runs_per_combination", "max_failed_runs", "screening", "quality_gates", "max_combinations",
         )}
         if "reality" in self.config.testing:
             testing["reality"] = self.config.testing["reality"]
+            testing["resolved_candidates"] = configured_candidates(self.config.testing, self.config.source_path)
+            testing["usable_candidates"] = self._usable_candidates
         if self._reality_profile:
             testing["resolved_reality"] = {"target": self._reality_profile.target,
                                            "server_names": self._reality_profile.server_names}

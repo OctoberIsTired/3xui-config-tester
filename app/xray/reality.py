@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+import yaml
+
 
 
 REALITY_TRANSPORTS = {"tcp", "grpc", "xhttp"}
@@ -39,6 +41,70 @@ def _store_stream(inbound: dict[str, Any], stream: dict[str, Any]) -> None:
 class RealityProfile:
     target: str
     server_names: tuple[str, ...]
+
+
+def profile_of(candidate: dict[str, str]) -> RealityProfile:
+    """Convert one target list entry into the profile used for a single run."""
+    return RealityProfile(candidate["target"], (candidate["server_name"],))
+
+
+def parse_candidates(data: Any) -> list[dict[str, str]]:
+    """Parse a public, key-free list of target/SNI pairs."""
+    if isinstance(data, str):
+        data = yaml.safe_load(data)
+    if not isinstance(data, dict) or not isinstance(data.get("targets"), list):
+        raise ValueError("REALITY file must contain a targets list")
+    result: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in data["targets"]:
+        if not isinstance(item, dict) or set(item) != {"target", "server_name"}:
+            raise ValueError("Each REALITY target needs target and server_name")
+        target, name = item["target"], item["server_name"]
+        profile, error = resolve_profile({"reality": {"target": target, "server_names": [name]}}, {})
+        if error or profile is None:
+            raise ValueError(f"Invalid REALITY target/SNI pair: {error}")
+        pair = (profile.target, profile.server_names[0])
+        if pair not in seen:
+            result.append({"target": pair[0], "server_name": pair[1]})
+            seen.add(pair)
+    if not result or len(result) > 512:
+        raise ValueError("REALITY targets must contain 1..512 unique pairs")
+    return result
+
+
+_CANDIDATE_CACHE: dict[tuple[str, int, int], list[dict[str, str]]] = {}
+
+
+def _candidates_from_file(path: Path) -> list[dict[str, str]]:
+    """Reuse the parsed list while the file is unchanged; one preview reads it several times."""
+    stat = path.stat()
+    key = (str(path), stat.st_mtime_ns, stat.st_size)
+    cached = _CANDIDATE_CACHE.get(key)
+    if cached is None:
+        _CANDIDATE_CACHE.clear()
+        cached = _CANDIDATE_CACHE[key] = parse_candidates(path.read_text(encoding="utf-8"))
+    return [dict(item) for item in cached]
+
+
+def configured_candidates(testing: dict[str, Any], source_path: Path | None = None) -> list[dict[str, str]]:
+    reality = testing.get("reality") or {}
+    if not isinstance(reality, dict):
+        raise ValueError("testing.reality must be an object")
+    file_name, inline = reality.get("candidates_file"), reality.get("candidates")
+    if file_name and inline:
+        raise ValueError("Use either reality.candidates_file or reality.candidates")
+    if (file_name or inline) and (reality.get("target") or reality.get("server_names")):
+        raise ValueError("Use either one REALITY target or a candidates list")
+    if file_name:
+        if not isinstance(file_name, str) or not source_path:
+            raise ValueError("reality.candidates_file requires a YAML config path")
+        path = Path(file_name)
+        if not path.is_absolute():
+            path = source_path.parent / path
+        return _candidates_from_file(path)
+    if inline is not None:
+        return parse_candidates({"targets": inline})
+    return []
 
 
 @dataclass(frozen=True)
@@ -104,7 +170,8 @@ def resolve_profile(testing: dict[str, Any], source: dict[str, Any]) -> tuple[Re
         names = existing.get("serverNames")
     if not target or not names:
         return None, "reality_target_or_sni_missing"
-    if not isinstance(target, str) or "://" in target or "/" in target or "@" in target:
+    if (not isinstance(target, str) or target.strip() != target or
+            any(char.isspace() for char in target) or "://" in target or "/" in target or "@" in target):
         return None, "reality_target_invalid"
     parsed = urlsplit("//" + target)
     try:

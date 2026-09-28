@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Iterator, Sequence
 
 from app.parameters.dependencies import conditions_match
+from app.parameters.compatibility import compatible
 from app.parameters.models import ParameterSpec
 
 
@@ -25,8 +26,11 @@ class Combination:
 
 
 class CombinationGenerator:
-    def __init__(self, parameters: Sequence[ParameterSpec]):
+    def __init__(self, parameters: Sequence[ParameterSpec], *, protocol: str | None = None,
+                 source_stream: dict[str, Any] | None = None):
         self.parameters = tuple(parameters)
+        self.protocol = protocol
+        self.source_stream = source_stream
 
     @property
     def raw_count(self) -> int:
@@ -140,12 +144,19 @@ class CombinationGenerator:
         yield from itertools.islice(self.mutations(), limit)
 
     def _normalize(self, full: dict[str, Any]) -> Combination | None:
-        if any(not conditions_match(parameter.conditions_for_value(full[parameter.name]), full)
-               for parameter in self.parameters):
+        # Active parameters are those whose own conditions hold; each of them must
+        # also satisfy the value_conditions of the value it received.
+        normalized = self._active(full)
+        if any(not conditions_match(parameter.conditions_for_value(normalized[parameter.name]), full)
+               for parameter in self.parameters if parameter.name in normalized):
             return None
-        normalized = {parameter.name: full[parameter.name] for parameter in self.parameters
-                      if conditions_match(parameter.conditions, full)}
+        if not compatible(normalized, self.parameters, protocol=self.protocol, source_stream=self.source_stream):
+            return None
         return Combination(normalized)
+
+    def _active(self, full: dict[str, Any]) -> dict[str, Any]:
+        return {parameter.name: full[parameter.name] for parameter in self.parameters
+                if conditions_match(parameter.conditions, full)}
 
     def _pairwise_rows(self, domains: list[list[Any]]) -> list[list[Any]]:
         if len(domains) == 1:
@@ -214,6 +225,8 @@ class CombinationGenerator:
         for _ in range(len(self.parameters) + 1):
             changed = False
             for index, parameter in enumerate(self.parameters):
+                if not conditions_match(parameter.conditions, full):
+                    continue
                 if conditions_match(parameter.conditions_for_value(full[parameter.name]), full):
                     continue
                 if parameter.name in locked:
@@ -226,7 +239,21 @@ class CombinationGenerator:
                 full[parameter.name] = replacement
                 changed = True
             if not changed:
-                return full
+                if compatible(self._active(full), self.parameters, protocol=self.protocol, source_stream=self.source_stream):
+                    return full
+                for index, parameter in enumerate(self.parameters):
+                    if parameter.name in locked:
+                        continue
+                    old = full[parameter.name]
+                    for value in domains[index]:
+                        if _value_key(value) == _value_key(old):
+                            continue
+                        candidate = {**full, parameter.name: value}
+                        if (conditions_match(parameter.conditions_for_value(value), candidate)
+                                and compatible(self._active(candidate), self.parameters, protocol=self.protocol,
+                                               source_stream=self.source_stream)):
+                            return candidate
+                return None
         return None
 
     def preview(self, limit: int = 10) -> list[Combination]:

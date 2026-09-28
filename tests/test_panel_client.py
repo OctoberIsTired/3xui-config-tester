@@ -4,8 +4,35 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import httpx
+import pytest
 
-from app.api.three_xui import ThreeXUIClient
+from app.api.three_xui import PanelAPIError, ThreeXUIClient
+
+
+def test_reality_scan_requires_discovery_and_sends_form_fields() -> None:
+    requests: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"success": True, "obj": {"feasible": True}})
+
+    async def scenario() -> None:
+        client = ThreeXUIClient({"url": "http://127.0.0.1"})
+        await client.client.aclose()
+        client.client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+        try:
+            with pytest.raises(PanelAPIError, match="scanRealityTarget"):
+                await client.scan_reality_target("www.microsoft.com:443", "www.microsoft.com")
+            client.openapi = {"paths": {client.REALITY_SCAN_PATH: {"post": {}}}}
+            assert (await client.scan_reality_target("www.microsoft.com:443", "www.microsoft.com"))["feasible"]
+            assert len(requests) == 1
+            assert requests[0].method == "POST"
+            assert b"allowPrivate=false" in requests[0].content
+            assert b"sni=www.microsoft.com" in requests[0].content
+        finally:
+            await client.aclose()
+
+    asyncio.run(scenario())
 
 
 def test_panel_client_ignores_system_proxy_by_default(monkeypatch) -> None:

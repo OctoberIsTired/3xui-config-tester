@@ -46,12 +46,9 @@ flowchart LR
 
 ## Quick start
 
-For a complete step-by-step setup and first-run guide in Russian, see
-[docs/START.ru_RU.md](docs/START.ru_RU.md).
-
-You need Python 3.12+, [uv](https://docs.astral.sh/uv/), a local Xray binary,
-access to the 3x-ui API, and a route from the test machine to the temporary
-inbound. The adapter has been tested with 3x-ui v3.8.0 and Xray v26.9.9;
+You need Git, Python 3.12+, [uv](https://docs.astral.sh/uv/), a local Xray
+binary, access to the 3x-ui API, and a route from the test machine to the
+temporary inbound. The adapter has been tested with 3x-ui v3.8.0 and Xray v26.9.9;
 each run also checks the live panel's OpenAPI before changing an inbound.
 
 ```bash
@@ -73,6 +70,18 @@ To include REALITY when the source inbound uses TLS, also set
 `testing.reality.server_names` (matching SNI names). The example leaves them
 commented out so you can choose a destination suitable for your server. The
 tester generates matching X25519 keys and a `shortId` for the experiment.
+
+To compare several REALITY destinations, use `testing.reality.candidates_file:
+reality-targets.yaml` in a config under `configs/`, or upload a YAML file in the
+Connection tab. The file contains `targets:` entries with `target` (`host:port`)
+and `server_name` (one SNI). The shipped
+[`configs/reality-targets.yaml`](configs/reality-targets.yaml) contains ten
+candidate seeds from 3x-ui; they are checked from the panel server before a
+run. An uploaded list is saved as `testing.reality.candidates` in the YAML
+config, so later runs use the same list. Use the list instead of the single
+`target`/`server_names` fields, and include `reality` in the `security`
+parameter. Separate client REALITY SNI/key parameters are incompatible with
+list mode because each destination controls its matching client SNI.
 
 Panel API requests connect directly by default, so a system HTTP proxy does
 not intercept a private panel address. If your panel must be reached through
@@ -104,9 +113,14 @@ Offline `combinations preview` warns about possible configuration issues
 without contacting the panel. Once it has read the source inbound, `--dry-run`
 reports the exact `skipped_combinations` count for pairwise and exhaustive
 plans, or `skipped_initial_candidates` for adaptive mutation. A TLS source
-without both REALITY fields skips REALITY candidates. The target and SNI are
-checked for valid form and consistency, but the tester does not probe target
-reachability; check it from the Xray server yourself.
+without both REALITY fields skips REALITY candidates. In list mode, dry-run
+uses the panel's `scanRealityTarget` API to check each pair from the server and
+excludes failed targets before changing any inbound. An older panel without
+that API stops the run with an error. Local `combinations preview` checks
+configuration rules but cannot establish target reachability.
+The accepted target list is recorded in the checkpoint. On `--resume`, it is
+probed again; if a previously accepted target is unavailable, the run stops
+before changing the inbound so it can be retried later with the same plan.
 
 After a real run, check `failed` in the CLI summary and `result.status` in
 `results.jsonl`: a completed experiment can exit successfully even when some
@@ -114,10 +128,303 @@ candidate configurations fail. Xray may reject incompatible combinations,
 such as unencrypted VLESS to a public server address.
 Invalid combinations are recorded once as `SKIPPED` with a reason code before
 any inbound update; the summary counts skips separately from connection
-failures. A warning also flags a short screening timeout and the reduced
+failures. Before an inbound is changed, the client config is checked by the
+local Xray binary in `run -test` mode: structural rules plus the core's own
+verdict on unknown transports or ciphers, REALITY parameters, and rejected
+destination addresses (for example plaintext VLESS to a public address). Such
+candidates become `SKIPPED` with a `client_config_*` code instead of a failed
+connection attempt. Set `testing.validate_config: false` to skip the core
+check; `timeouts.xray_config_test` bounds it. When the local binary is
+unavailable, configs are checked structurally only and the reason is reported
+as a warning. A warning also flags a short screening timeout and the reduced
 number of repeats when `testing.max_failed_runs` is reached.
 Omit `--max-tests` to run the entire planned set, up to
 `testing.max_combinations`.
+
+## Step-by-step setup
+
+This walkthrough goes from an empty folder to a first report. Run every command
+**on the machine with the tester**; the 3x-ui panel and the Xray inbound may live
+on another server. Replace `panel.example.com`, `vpn.example.com`, ID `4`, port
+`2054`, and the Xray paths with your own values.
+
+### 1. Prepare the panel and the network
+
+Collect these values before installing anything:
+
+| What | Where it comes from |
+| --- | --- |
+| Panel API URL | A 3x-ui address reachable from the tester, for example `https://panel.example.com` or the local end of an SSH tunnel. Use the base URL, without `/panel/api/...`. |
+| API token | Credentials for the panel. The YAML references an environment variable instead of the token itself. |
+| Source inbound ID | The number from the panel's inbound list. The clone is created from it. |
+| Xray server address | The IP or hostname the local Xray client connects to. This is usually **not** the panel API address. |
+| Clone port | A free TCP port on the 3x-ui server, reachable from the tester. KCP/mKCP also needs UDP. |
+| Xray file | An Xray executable for **the tester machine**, not only the server-side Xray bundled with 3x-ui. |
+
+The source inbound must contain at least one client and use `vless`, `vmess`,
+`trojan`, or `shadowsocks`; the first client is tested. Make sure a route leads
+to the clone port and that firewall and provider rules allow it. `--dry-run`
+does not check that reachability.
+
+If the panel API listens only on `127.0.0.1` of a remote server, open a
+**separate terminal on the tester** and keep the tunnel running:
+
+```bash
+ssh -N -L 2054:127.0.0.1:2054 user@server
+```
+
+The first `2054` is the local port of the tester, the second is the panel port on
+the server. Then set `panel.url: "http://127.0.0.1:2054"`, or `https` if the panel
+really serves HTTPS. See [SSH access to the 3x-ui API](#ssh-access-to-the-3x-ui-api).
+
+### 2. Install the tools
+
+You need Git, [uv](https://docs.astral.sh/uv/getting-started/installation/),
+Python 3.12+, and Xray. Verify what is already installed:
+
+```text
+git --version
+uv --version
+```
+
+Install uv from the [official instructions](https://docs.astral.sh/uv/getting-started/installation/):
+
+**Linux (bash):**
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+**Windows (PowerShell):**
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+Open a new terminal and run `uv --version`. If Python 3.12+ is missing, uv can
+install it for the project:
+
+```text
+uv python install 3.12
+```
+
+For the local Xray, use an existing executable or download the archive for your
+OS and architecture from the
+[official Xray-core releases](https://github.com/XTLS/Xray-core/releases).
+Unpack it on **the tester machine**, note the path to `xray`/`xray.exe`, and
+check that it runs:
+
+```bash
+# Linux
+/usr/local/x-ui/bin/xray-linux-amd64 version
+```
+
+```powershell
+# Windows, when the archive is unpacked into .tools/xray inside the project
+& ".\.tools\xray\xray.exe" version
+```
+
+That binary also validates client configs in `run -test` mode; see
+[Configuration](#configuration).
+
+### 3. Clone the project and its dependencies
+
+**Linux (bash):**
+
+```bash
+git clone https://github.com/OctoberIsTired/3xui-tester.git
+cd 3xui-tester
+uv sync
+cp configs/example.yaml configs/local.yaml
+```
+
+**Windows (PowerShell):**
+
+```powershell
+git clone https://github.com/OctoberIsTired/3xui-tester.git
+Set-Location 3xui-tester
+uv sync
+Copy-Item configs/example.yaml configs/local.yaml
+```
+
+`configs/local.yaml` is ignored by Git. Run the remaining commands from the
+repository root; `uv run` uses the project environment.
+
+### 4. Set the token and edit `configs/local.yaml`
+
+The environment variable lives in the **current terminal**. After opening a new
+terminal, set it again before running the CLI or the Web UI.
+
+**Linux (bash):**
+
+```bash
+export PANEL_API_TOKEN='your-token'
+```
+
+**Windows (PowerShell):**
+
+```powershell
+$env:PANEL_API_TOKEN = 'your-token'
+```
+
+Edit the existing fields in `configs/local.yaml`; do not replace the whole file
+with the excerpt below, because the example also carries parameters, timeouts,
+and measurement settings.
+
+```yaml
+panel:
+  url: "https://panel.example.com"
+  api_token: "${PANEL_API_TOKEN}"
+  verify_tls: true
+
+inbound:
+  mode: clone
+  source_id: 4
+  test_port: 24443
+
+testing:
+  server_address: "vpn.example.com"
+  xray_binary: "/path/to/local/xray"
+  runs_per_combination: 1
+  max_combinations: 50
+  urls: ["https://example.com"]
+  speed_test: {enabled: false, url: "https://example.com/test.bin", max_bytes: 5000000}
+
+output:
+  directory: "./results-first-run"
+```
+
+On Windows use forward slashes in the binary path, for example
+`xray_binary: ".tools/xray/xray.exe"`. Pick a `test_port` that differs from the
+panel API port when both services share a server. Set `runs_per_combination: 1`,
+`speed_test.enabled: false`, and a separate `output.directory` for the first run.
+`inbound.test_port` is the only field missing from `configs/example.yaml`: add it
+inside the `inbound` section. When the test port is omitted, the tester picks the
+first locally free port from `testing.port_range`; with a remote panel that check
+does not prove the port is free **on the server**.
+
+`panel.trust_env` is `false` by default, so panel requests bypass a system HTTP
+proxy; add `trust_env: true` to the `panel` section if your panel needs it. Fix
+the certificate or the name in `panel.url` instead of disabling verification;
+use `verify_tls: false` only for a deliberate local check.
+
+To include REALITY for a TLS source, set `testing.reality.target` (a TLS
+destination such as `www.example.com:443`) and `testing.reality.server_names`
+(SNI names matching its certificate). The example leaves them commented out so
+you can choose a destination suitable for your server. The tester generates the
+matching X25519 keys and a `shortId` per experiment. To compare several
+destinations, use the target list described in the quick start above.
+
+### 5. Validate the configuration without changing the inbound
+
+The commands below are the same in bash and PowerShell. The first one only reads
+the YAML and builds a plan locally; it does not contact the panel:
+
+```text
+uv run 3xui-tester combinations preview -c configs/local.yaml
+```
+
+Check `Strategy`, `Planned combinations`, and the first candidates. A YAML error
+means wrong indentation or a wrong value type.
+
+Then check panel access and the inbound IDs:
+
+```text
+uv run 3xui-tester panel test -c configs/local.yaml
+uv run 3xui-tester inbound list -c configs/local.yaml
+```
+
+`inbound.source_id` must match the intended row. Finally run the preflight:
+
+```text
+uv run 3xui-tester test -c configs/local.yaml --dry-run --max-tests 1
+```
+
+Every candidate is checked against the local Xray binary (`run -test`), so the
+dry-run summary already reports the real skip count: `skipped_combinations` for
+pairwise and exhaustive plans, `skipped_initial_candidates` for mutation.
+`--dry-run` **does not check** the clone port or the measurement URLs. In
+`existing` mode even this step writes `source-inbound-backup.json`.
+
+Before a real run, confirm that the test port is free on the server and
+reachable from the tester: before the clone exists, a connection to that port is
+expected to fail.
+
+### 6. Run a short first experiment
+
+Keep `inbound.mode: clone`, `runs_per_combination: 1`, `speed_test.enabled:
+false`, and the separate `./results-first-run` directory, then run:
+
+```text
+uv run 3xui-tester test -c configs/local.yaml --max-tests 1
+```
+
+`--max-tests 1` means **one configuration**, not one HTTP request. The tester
+creates the temporary inbound, applies the configuration, starts the local Xray
+client, records the result, and removes the clone at the end. The summary
+contains `completed`, `failed`, `termination_reason`, plus `cleanup_error` or
+`export_error` when cleanup or export fails.
+
+Exit code `0` means the experiment finished normally; it does not prove that a
+measurement succeeded. If `failed` is greater than zero, inspect
+`result.status`, `result.stage`, `result.error_message`, or
+`result.gate_failures` in `results.jsonl`. Incompatible candidates are rejected
+by the local Xray before the inbound changes and recorded as `SKIPPED` with a
+`client_config_*` code. To check a known-good source inbound on its own,
+temporarily set `parameters: {}` and a new `output.directory`, repeat preview and
+dry-run, then run with `--max-tests 1`.
+
+Afterwards confirm in the panel that the inbound marked `[3xui-tester:...]` is
+gone. An abnormal exit or an unreachable panel can leave the clone behind: find
+it by that marker and inspect it manually. Never delete the source inbound.
+
+### 7. Read the results and run the full plan
+
+The first run writes `results.jsonl`, `state.json`, `errors.jsonl` for failed
+repeats, and the export files into `output.directory`; see
+[Results and resume](#results-and-resume).
+
+For a more reliable comparison, raise `testing.runs_per_combination` (for
+example to `5`), choose the wanted parameters, strategy, and limit, and point
+`output.directory` at a **new** folder such as `./results-full-run` to keep two
+journals apart. Repeat preview and dry-run, then run:
+
+```text
+uv run 3xui-tester test -c configs/local.yaml --max-tests 50
+```
+
+The number 50 is an upper bound on configurations; the actual plan can be
+smaller. Drop `--max-tests 50` to run the entire plan within
+`testing.max_combinations`. Check `configurations_tested`, `failed`, and
+`termination_reason` in the summary afterwards.
+
+### 8. Stop and resume
+
+Stop the CLI with `Ctrl+C`; on Linux the runner also handles `SIGTERM`. Wait for
+the process to finish and confirm that the clone is gone. Keep the **same**
+`output.directory`, parameters, and plan settings, then resume:
+
+```text
+uv run 3xui-tester test -c configs/local.yaml --resume
+```
+
+`--resume` needs an existing `state.json`, compares the plan signature, and
+skips repeats already present in `results.jsonl`. After changing search
+parameters or repeat counts, start a new experiment in a new directory.
+
+### 9. Use the local Web UI
+
+Prepare `configs/local.yaml` and the token as in steps 3–4, then start the
+backend from the repository root:
+
+```text
+uv run python -m app.web --config configs/local.yaml --port 8765
+```
+
+Open `http://127.0.0.1:8765` **on the same machine**. Fill in the Connection
+tab, choose parameters, limit the plan, and start the run from the last tab. The
+UI saves into the file passed with `--config` and gives every run its own folder
+under `output.directory/runs/`; see [Local Web UI](#local-web-ui).
 
 ## SSH access to the 3x-ui API
 
@@ -192,6 +499,75 @@ machine, forward its port separately to open it in your local browser:
 ssh -L 8765:127.0.0.1:8765 user@server
 ```
 
+## CLI commands
+
+```bash
+uv run 3xui-tester panel test -c configs/local.yaml
+uv run 3xui-tester inbound list -c configs/local.yaml
+uv run 3xui-tester inbound show 4 -c configs/local.yaml
+uv run 3xui-tester parameters list -c configs/local.yaml
+uv run 3xui-tester combinations preview -c configs/local.yaml
+uv run 3xui-tester test -c configs/local.yaml --dry-run
+uv run 3xui-tester test -c configs/local.yaml --max-tests 50
+uv run 3xui-tester test -c configs/local.yaml --resume
+```
+
+`--dry-run` authenticates, discovers, and runs the preflight, but never creates,
+updates, or deletes an inbound; in `existing` mode it still writes
+`source-inbound-backup.json`. `--max-tests` caps the number of configurations on
+top of `testing.max_combinations`.
+
+## Configuration
+
+The full example lives in [configs/example.yaml](configs/example.yaml):
+
+| Field | Purpose |
+| --- | --- |
+| `panel.url` | Base 3x-ui URL without a page path. |
+| `panel.api_token` | API token, usually `${PANEL_API_TOKEN}`. |
+| `inbound.source_id` | ID of the inbound the clone is created from. |
+| `inbound.mode` | `clone` by default; `existing` requires `allow_existing: true`. |
+| `inbound.test_port` | Optional fixed clone port; otherwise the first locally free port from `testing.port_range`. |
+| `testing.server_address` | Public address of the clone inbound, not the panel URL. |
+| `testing.xray_binary` | Path to the local Xray binary; it also checks client configs. |
+| `testing.validate_config` | `true` by default: reject configs the local `xray run -test` does not accept. |
+| `testing.reality.target` | Server-side TLS destination as `hostname:port`; required for REALITY from a TLS source. |
+| `testing.reality.server_names` | SNI names matching the REALITY destination certificate. |
+| `testing.reality.candidates_file` | A target/SNI list instead of one `target`/`server_names`; path relative to the YAML. |
+| `testing.urls` | URLs measured over the local SOCKS proxy. |
+| `testing.combination_strategy` | `mutation`, `pairwise`, or `exhaustive`; `pairwise` by default. |
+| `testing.max_combinations` | Hard limit on tested configurations. |
+| `testing.runs_per_combination` | Repeats per configuration; 5 makes averages and standard deviations usable. |
+| `testing.max_failed_runs` | Failed repeats allowed before a configuration is abandoned. |
+| `output.directory` | Results and checkpoint directory. |
+
+The source inbound must contain at least one client and use `vless`, `vmess`,
+`trojan`, or `shadowsocks`; the first client is used for the local Xray client.
+A parameter declares a type, values, a JSON path, a target, and an optional
+condition:
+
+```yaml
+parameters:
+  network:
+    type: enum
+    values: [tcp, kcp, ws, grpc, httpupgrade, xhttp]
+    mutate: true
+    target: inbound
+    path: [streamSettings, network]
+```
+
+`target: inbound` changes the test inbound; `target: client` changes only the
+local Xray configuration. In `existing` mode the test inbound is the source
+inbound. Conditions support `equals`, `not_equals`, `in`, `not_in`, `exists`,
+`all`, and `any`.
+
+KCP/mKCP needs UDP on the test port; TLS gRPC needs ALPN `h2`; VLESS
+`xtls-rprx-vision` applies to raw TCP with TLS or REALITY only, and the runner
+drops an inherited flow when the transport or security mode changes. REALITY
+X25519 keys and the `shortId` are generated once per experiment. For several
+destinations, use the `candidates_file` list described in the quick start
+instead of `target`/`server_names`.
+
 ## Results and resume
 
 `output.directory` contains the append-only `results.jsonl` journal and the
@@ -203,9 +579,10 @@ TCP+TLS, TCP+REALITY, and XHTTP+REALITY (path `/`, mode `auto`) on the temporary
 inbound. Unavailable profiles are marked as skipped. Sanitized outcomes go to
 `diagnostics.jsonl`; a failed control check does not stop the main plan. These
 checks do not include ping or speed measurements.
-In `results.xlsx`, each `#N` on the Dashboard charts and ranking identifies
+In `results.xlsx`, each `#N` on the Dashboard charts and candidate table identifies
 the `#N` row on the Candidates sheet, which lists the full parameter set,
-test ID, and configuration hash. Chart axes include metric names and units.
+test ID, and configuration hash. Candidate rows follow the order in which tests
+first appear in `results.jsonl`; chart axes include metric names and units.
 
 ```bash
 uv run 3xui-tester test -c configs/local.yaml --resume
@@ -219,6 +596,24 @@ file is missing from a REALITY experiment, resume stops rather than silently
 generating different keys. The keys are excluded from CLI
 output, the Web UI, journals, and exports.
 The Web UI gives each run its own directory under `output.directory/runs/`.
+
+## Troubleshooting
+
+| Symptom | What to check |
+| --- | --- |
+| `uv` not found | Open a new terminal after installing uv and run `uv --version`. |
+| `Set panel.api_token or PANEL_USERNAME/PANEL_PASSWORD` | Set `PANEL_API_TOKEN` in the same terminal that runs the command and keep `${PANEL_API_TOKEN}` in the YAML. |
+| Panel authorization or connection error | Check `panel.url`, the token, the `http`/`https` scheme, the SSH tunnel, and API reachability. With a system proxy, check `panel.trust_env`. |
+| TLS certificate error | Check that the certificate matches the hostname in `panel.url`. For an SSH tunnel, `https://127.0.0.1` may not match the certificate name. |
+| `Panel OpenAPI lacks required paths` | The running panel does not expose the operations the adapter needs. Check the panel version and URL instead of starting a run blindly. |
+| `Configured test_port ... is already used` | Pick another free clone port on the server and update `inbound.test_port`. |
+| Panel Xray is not running | Check the Xray state in 3x-ui; the preflight stops before the experiment. |
+| `XRAY_ERROR` | Check `testing.xray_binary`, its execute permissions, parameter compatibility, and the local Xray output. |
+| `client_config_*` with status `SKIPPED` | The local Xray rejected the client config; `reason_code` names the cause (transport, cipher, REALITY parameters, destination address). Remove the incompatible value from `parameters` or check `testing.server_address`. |
+| Warning "The local Xray config check is unavailable" | The local binary is missing, lacks `-test`, or does not answer, so only the config structure is checked. Fix `testing.xray_binary` or set `testing.validate_config: false`. |
+| `TIMEOUT` or failed HTTP measurements | Check the route to `testing.server_address`, the test port, the firewall, DNS, and `testing.urls` reachability through the test connection. |
+| `--resume requested but ... state.json does not exist` | Restore the original `output.directory` of the interrupted run or start a new run without `--resume` in a new directory. |
+| A clone remains in the panel | Find the inbound by its `[3xui-tester:...]` marker and delete it manually after checking what it is. |
 
 ## Safety boundaries
 

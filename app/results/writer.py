@@ -94,11 +94,8 @@ class ResultStore:
                     if len(values) > 1:
                         summary[f"{output}_stddev"] = statistics.stdev(values)
             summaries.append(summary)
-        summaries.sort(key=lambda item: (
-            0 if item["phase"] == "validation" else 1,
-            item.get("candidate_rank") if item.get("candidate_rank") is not None else 10**9,
-            -float(item.get("score_avg", 0)),
-        ))
+        # Keep the journal's first-seen order so new candidates append below
+        # existing rows and their #N labels stay stable during a live run.
         return summaries
 
     def _write_xlsx(self, records: list[dict[str, Any]]) -> None:
@@ -341,7 +338,7 @@ class ResultStore:
             dashboard.add_chart(stability_chart, "J26")
 
         dashboard.merge_cells("B41:Q41")
-        dashboard["B41"] = "РЕЙТИНГ И СТАБИЛЬНОСТЬ КАНДИДАТОВ"
+        dashboard["B41"] = "РЕЗУЛЬТАТЫ КАНДИДАТОВ ПО ПОРЯДКУ ТЕСТА"
         dashboard["B41"].fill = PatternFill("solid", fgColor=blue)
         dashboard["B41"].font = Font(name="Arial", size=10, bold=True, color=white)
         headers = ["№", "Параметры конфигурации", "Запуски", "Успех", "Балл", "p95, мс",

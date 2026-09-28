@@ -14,6 +14,10 @@ testing:
   # Public address where Xray clients reach the clone; do not use a panel URL path here.
   server_address: "vpn.example.com"
   xray_binary: "/usr/local/x-ui/bin/xray-linux-amd64"
+  # По умолчанию `true`: клиентский конфиг проверяется локальным Xray
+  # (`xray run -test`) до изменения inbound. Конфиги, которые ядро не
+  # принимает, записываются как SKIPPED с кодом client_config_*.
+  validate_config: true
   port_range: [20000, 21000]
   # Five runs make the p95/speed standard deviation useful for ranking candidates.
   runs_per_combination: 5
@@ -24,7 +28,10 @@ testing:
   # To test REALITY when the source inbound uses TLS, set both fields below.
   # The target is a server-side TLS destination (hostname:port); server_names
   # contains SNI names whose certificate matches that destination.
-  # Preview and dry-run validate syntax and SNI consistency, not reachability.
+  # Alternatively use the shipped list; paths are relative to this YAML file.
+  # The panel checks each pair before the test, and only feasible pairs enter the plan.
+  # reality:
+  #   candidates_file: reality-targets.yaml
   # reality:
   #   target: "www.example.com:443"
   #   server_names: ["www.example.com"]
@@ -48,6 +55,8 @@ testing:
 timeouts:
   api: 10
   xray_start: 15
+  # Ограничивает одну проверку `xray run -test` для клиентского конфига.
+  xray_config_test: 15
   # A failed candidate must be rejected quickly, not spend 20 seconds per request.
   request: 5
   tcp_connect: 3

@@ -6,11 +6,28 @@ from app.parameters.registry import parameter_registry
 import json
 from pathlib import Path
 
-from app.config import load_config
+from app.config import ExperimentConfig, load_config
+import pytest
 
 
 def parameter(name: str, data: dict) -> ParameterSpec:
     return ParameterSpec.from_dict(name, data)
+
+
+def test_reality_candidate_list_owns_client_identity() -> None:
+    security = parameter("security", {"type": "enum", "values": ["none", "reality"],
+                                      "path": ["streamSettings", "security"]})
+    candidates = [{"target": "www.example.com:443", "server_name": "www.example.com"}]
+
+    def config(*extra: ParameterSpec) -> ExperimentConfig:
+        return ExperimentConfig(panel={}, inbound={}, parameters=(security, *extra),
+                                testing={"reality": {"candidates": candidates}})
+
+    assert config().search_parameters()[-1].name == "reality_profile"
+    with pytest.raises(ValueError, match="reality_server_name"):
+        config(parameter("reality_server_name", {"type": "string", "values": ["example.com"], "target": "client",
+                                                 "path": ["outbounds", 0, "streamSettings", "realitySettings",
+                                                          "serverName"]})).search_parameters()
 
 
 def test_numeric_boolean_and_lazy_dependency_generation() -> None:
@@ -80,7 +97,7 @@ def test_registry_merges_live_inbound_values() -> None:
 def test_example_config_covers_all_supported_transports() -> None:
     expected = {
         "tcp": {"none", "tls", "reality"},
-        "kcp": {"none", "tls"},
+        "kcp": {"none"},
         "ws": {"none", "tls"},
         "grpc": {"none", "tls", "reality"},
         "httpupgrade": {"none", "tls"},
@@ -109,6 +126,48 @@ def test_grpc_tls_alpn_candidates_always_offer_http2() -> None:
     assert {tuple(item["tls_alpn"]) for item in generated} == {
         ("h2", "http/1.1"), ("h2",),
     }
+
+
+def test_documented_compatibility_applies_to_custom_yaml_paths() -> None:
+    specs = [parameter("transport_choice", {"type": "enum", "values": ["kcp", "tcp", "grpc", "ws", "xhttp"],
+                                            "path": ["streamSettings", "network"]}),
+             parameter("protection_choice", {"type": "enum", "values": ["none", "tls", "reality"],
+                                             "path": ["streamSettings", "security"]}),
+             parameter("alpn_choice", {"type": "enum", "values": [["h2"], ["http/1.1"]],
+                                       "path": ["streamSettings", "tlsSettings", "alpn"],
+                                       "conditions": {"protection_choice": {"equals": "tls"}}})]
+    generator = CombinationGenerator(specs)
+    for strategy in (generator.iter_valid, generator.pairwise, generator.mutations):
+        rows = [item.values for item in strategy()]
+        assert rows
+        assert not any(row["transport_choice"] == "kcp" and row["protection_choice"] != "none" for row in rows)
+        assert not any(row["transport_choice"] == "ws" and row["protection_choice"] == "reality" for row in rows)
+        assert not any(row["transport_choice"] == "grpc" and row.get("alpn_choice") == ["http/1.1"] for row in rows)
+        assert not any(row["transport_choice"] == "ws" and row.get("alpn_choice") == ["h2"] for row in rows)
+
+
+def test_tls_version_xhttp_get_and_xmux_constraints() -> None:
+    from app.parameters.compatibility import compatible
+    specs = [parameter(name, {"type": "enum", "values": [value], "path": path}) for name, value, path in [
+        ("net", "xhttp", ["streamSettings", "network"]),
+        ("min", "1.3", ["streamSettings", "tlsSettings", "minVersion"]),
+        ("max", "1.2", ["streamSettings", "tlsSettings", "maxVersion"]),
+        ("sec", "tls", ["streamSettings", "security"]),
+        ("mode", "stream-up", ["streamSettings", "xhttpSettings", "mode"]),
+        ("method", "GET", ["streamSettings", "xhttpSettings", "uplinkHTTPMethod"]),
+    ]]
+    values = {item.name: item.values[0] for item in specs}
+    assert not compatible(values, specs)
+    values.update({"max": "1.3", "mode": "packet-up"})
+    assert compatible(values, specs)
+
+
+def test_source_protocol_and_stream_rule_out_vision_on_vmess() -> None:
+    flow = parameter("my_flow", {"type": "enum", "values": ["", "xtls-rprx-vision"],
+                                 "path": ["settings", "clients", 0, "flow"]})
+    generator = CombinationGenerator([flow], protocol="vmess",
+                                     source_stream={"network": "tcp", "security": "tls"})
+    assert [item.values["my_flow"] for item in generator.iter_valid()] == [""]
 
 
 def test_pairwise_covers_all_pairs_without_full_cartesian_product() -> None:

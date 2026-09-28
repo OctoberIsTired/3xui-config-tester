@@ -4,7 +4,34 @@ import threading
 import yaml
 
 from app.results.writer import ResultStore
-from app.web import WebService, _compact_configuration_label
+from app.web import PAGE, WebService, _compact_configuration_label
+
+
+def test_reality_file_import_is_available_in_web_ui() -> None:
+    rows = WebService.import_reality_candidates(
+        "targets:\n  - {target: www.microsoft.com:443, server_name: www.microsoft.com}\n")
+    assert rows == [{"target": "www.microsoft.com:443", "server_name": "www.microsoft.com"}]
+    assert len(WebService.default_reality_candidates()) == 10
+    assert 'id="realityFile"' in PAGE
+    assert "/api/reality/import" in PAGE
+
+
+def test_web_ui_drops_reality_identity_parameters_from_every_draft() -> None:
+    """Preview, run and save all send drafts; all of them must respect the target list."""
+    assert "function stripRealityIdentity(draft)" in PAGE
+    assert PAGE.count("return stripRealityIdentity(draft)") == 2
+    assert "delete draft.parameters.reality_server_name" not in PAGE
+
+
+def test_web_exposes_cli_candidate_file_as_yaml_snapshot(tmp_path: Path) -> None:
+    (tmp_path / "targets.yaml").write_text(
+        "targets:\n  - {target: www.microsoft.com:443, server_name: www.microsoft.com}\n", encoding="utf-8")
+    config_path = tmp_path / "local.yaml"
+    config_path.write_text(yaml.safe_dump({"panel": {}, "inbound": {}, "parameters": {},
+                                          "testing": {"reality": {"candidates_file": "targets.yaml"}}}), encoding="utf-8")
+    reality = WebService(config_path).public_config()["testing"]["reality"]
+    assert reality["candidates"][0]["target"] == "www.microsoft.com:443"
+    assert "candidates_file" not in reality
 
 
 def test_compact_configuration_label_keeps_transport_and_security() -> None:
@@ -212,6 +239,29 @@ def test_run_dashboard_counts_skipped_separately(tmp_path: Path) -> None:
     assert dashboard["skipped"] == 1
     assert dashboard["success_rate"] == 0.5
     assert len(dashboard["candidates"]) == 2
+
+
+def test_run_dashboard_keeps_candidate_rows_in_first_seen_order(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump({"panel": {}, "inbound": {}, "parameters": {}}), encoding="utf-8")
+    result_directory = tmp_path / "results"
+    store = ResultStore(result_directory)
+    service = WebService(config_path)
+    service._run_state = {"status": "running", "result_directory": str(result_directory)}
+
+    for test_id, score in ((1, 0.2), (2, 0.9)):
+        store.append({"test_id": test_id, "run": 1, "configuration_hash": str(test_id),
+                      "configuration": {"candidate": test_id},
+                      "result": {"status": "OK", "score": score}})
+    assert [item["label"].split(" · ")[0] for item in service.run_dashboard()["candidates"]] == ["#1", "#2"]
+
+    store.append({"test_id": 1, "run": 2, "configuration_hash": "1",
+                  "configuration": {"candidate": 1}, "result": {"status": "OK", "score": 1.0}})
+    store.append({"test_id": 3, "run": 1, "configuration_hash": "3",
+                  "configuration": {"candidate": 3}, "result": {"status": "OK", "score": 0.1}})
+    candidates = service.run_dashboard()["candidates"]
+    assert [item["label"].split(" · ")[0] for item in candidates] == ["#1", "#2", "#3"]
+    assert [item["score"] for item in candidates] == [0.6, 0.9, 0.1]
 
 
 def test_run_history_lists_reports_and_rejects_unknown_downloads(tmp_path: Path) -> None:

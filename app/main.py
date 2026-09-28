@@ -9,7 +9,7 @@ from rich import print
 from rich.table import Table
 
 from app.api.three_xui import ThreeXUIClient
-from app.config import load_config, offline_warnings
+from app.config import load_config, offline_warnings, REALITY_CANDIDATES_UNCHECKED_WARNING
 from app.parameters.generator import CombinationGenerator
 from app.security.masking import mask_parameter_values, mask_secrets
 from app.testing.runner import ExperimentRunner
@@ -86,7 +86,7 @@ def parameters_list(config: Path = typer.Option(..., "--config", "-c", exists=Tr
 def combinations_preview(config: Path = typer.Option(..., "--config", "-c", exists=True), limit: int = typer.Option(10, min=1)) -> None:
     """Print raw count and the first valid normalized combinations without contacting the panel."""
     loaded = load_config(config)
-    generator = CombinationGenerator(loaded.parameters)
+    generator = CombinationGenerator(loaded.search_parameters())
     plan = (generator.mutations() if loaded.combination_strategy == "mutation" else
             generator.pairwise() if loaded.combination_strategy == "pairwise" else
             generator.preview(loaded.max_combinations))
@@ -94,9 +94,11 @@ def combinations_preview(config: Path = typer.Option(..., "--config", "-c", exis
     print(f"Strategy: {loaded.combination_strategy}\nRaw combinations: {generator.raw_count}\n"
           f"Planned combinations: {min(len(plan), loaded.max_combinations)} (limit {loaded.max_combinations})")
     for number, item in enumerate(preview, 1):
-        print(f"{number:>3}. {json.dumps(mask_parameter_values(item.values, loaded.parameters), ensure_ascii=False)}")
+        print(f"{number:>3}. {json.dumps(mask_parameter_values(item.values, generator.parameters), ensure_ascii=False)}")
     for warning in offline_warnings(loaded):
         print(f"Warning: {warning}")
+    if loaded.has_reality_candidates:
+        print(f"Warning: {REALITY_CANDIDATES_UNCHECKED_WARNING}")
 
 
 @app.command("test")

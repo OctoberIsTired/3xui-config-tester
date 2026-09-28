@@ -32,8 +32,8 @@ class ParameterSpec:
             raise ValueError(f"Parameter {name}: unsupported type {kind!r}")
         values = data.get("values")
         target = data.get("target", "inbound")
-        if target not in {"inbound", "client"}:
-            raise ValueError(f"Parameter {name}: target must be inbound or client")
+        if target not in {"inbound", "client", "context"}:
+            raise ValueError(f"Parameter {name}: target must be inbound, client or context")
         numeric_range = any(key in data for key in ("min", "max", "step"))
         if values is None and not numeric_range:
             raise ValueError(f"Parameter {name}: values or min/max/step is required")

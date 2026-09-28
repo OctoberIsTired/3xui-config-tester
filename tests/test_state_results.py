@@ -127,3 +127,18 @@ def test_xlsx_chart_numbers_map_to_complete_configurations(tmp_path: Path) -> No
     assert len(scatter.series) == 2
     assert [series.title.strRef.strCache.pt[0].v if series.title.strRef else series.title.v
             for series in scatter.series] == ["#1", "#2"]
+
+
+def test_exported_candidate_rows_follow_journal_order(tmp_path: Path) -> None:
+    store = ResultStore(tmp_path)
+    for test_id, score, phase in ((1, 0.2, "search"), (2, 0.9, "search"), (3, 0.5, "validation")):
+        store.append({"test_id": test_id, "run": 1, "phase": phase,
+                      "configuration_hash": str(test_id), "configuration": {"candidate": test_id},
+                      "result": {"status": "OK", "score": score}})
+
+    assert [item["test_id"] for item in store._summaries(store.records())] == [1, 2, 3]
+    store.export(["xlsx"])
+    from openpyxl import load_workbook
+    workbook = load_workbook(tmp_path / "results.xlsx")
+    assert [row[2] for row in list(workbook["Candidates"].values)[1:]] == [1, 2, 3]
+    assert [workbook["Dashboard"].cell(row, 2).value for row in (43, 44, 45)] == ["#1", "#2", "#3"]

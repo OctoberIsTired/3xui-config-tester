@@ -1,0 +1,13 @@
+# Candidate seeds from 3x-ui's default REALITY scanner list.
+# Their suitability changes by location and time; the panel probes them before a run.
+targets:
+  - {target: "www.cloudflare.com:443", server_name: "www.cloudflare.com"}
+  - {target: "www.microsoft.com:443", server_name: "www.microsoft.com"}
+  - {target: "www.amazon.com:443", server_name: "www.amazon.com"}
+  - {target: "aws.amazon.com:443", server_name: "aws.amazon.com"}
+  - {target: "www.samsung.com:443", server_name: "www.samsung.com"}
+  - {target: "www.nvidia.com:443", server_name: "www.nvidia.com"}
+  - {target: "www.amd.com:443", server_name: "www.amd.com"}
+  - {target: "www.intel.com:443", server_name: "www.intel.com"}
+  - {target: "www.sony.com:443", server_name: "www.sony.com"}
+  - {target: "dl.google.com:443", server_name: "dl.google.com"}

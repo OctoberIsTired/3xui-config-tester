@@ -20,6 +20,7 @@ class ThreeXUIClient:
         "/panel/api/inbounds/del/{id}", "/panel/api/server/status",
     }
     XRAY_LOG_PATH = "/panel/api/server/xraylogs/{count}"
+    REALITY_SCAN_PATH = "/panel/api/server/scanRealityTarget"
 
     def __init__(self, panel: dict[str, Any], timeout: float = 10):
         url = str(panel.get("url", "")).rstrip("/")
@@ -100,6 +101,14 @@ class ThreeXUIClient:
 
     async def server_status(self) -> dict[str, Any]:
         return dict(self._obj(await self.client.get(self._url("/panel/api/server/status"))))
+
+    async def scan_reality_target(self, target: str, sni: str, xver: int = 0) -> dict[str, Any]:
+        if not self.openapi or "post" not in self.openapi.get("paths", {}).get(self.REALITY_SCAN_PATH, {}):
+            raise PanelAPIError("Panel OpenAPI lacks scanRealityTarget; REALITY target checks require a newer panel")
+        response = await self.client.post(self._url(self.REALITY_SCAN_PATH),
+                                          data={"target": target, "sni": sni, "xver": str(xver), "allowPrivate": "false"},
+                                          timeout=max(float(self.client.timeout.read or 10), 15))
+        return dict(self._obj(response))
 
     async def xray_logs(self, count: int = 20) -> str | None:
         """Read optional server logs in memory; callers must only persist categories."""

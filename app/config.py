@@ -9,6 +9,7 @@ from typing import Any
 import yaml
 
 from app.parameters.models import ParameterSpec
+from app.xray.reality import configured_candidates
 
 _ENV = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
@@ -32,6 +33,37 @@ class ExperimentConfig:
     timeouts: dict[str, Any] = field(default_factory=dict)
     output: dict[str, Any] = field(default_factory=dict)
     source_path: Path | None = None
+
+    def search_parameters(self, candidates: list[dict[str, str]] | None = None) -> tuple[ParameterSpec, ...]:
+        profiles = configured_candidates(self.testing, self.source_path) if candidates is None else candidates
+        if not profiles:
+            return self.parameters
+        security = next((item for item in self.parameters if item.target == "inbound" and
+                         item.path == ("streamSettings", "security")), None)
+        if security is None or "reality" not in tuple(security.iter_values()):
+            raise ValueError("REALITY candidates require a security parameter containing reality")
+        if any(item.name == "reality_profile" for item in self.parameters):
+            raise ValueError("reality_profile is reserved for the REALITY target list")
+        identity = {"serverName", "shortId", "password", "publicKey"}
+        conflicting = [item.name for item in self.parameters if item.target == "client" and item.path[:4] ==
+                       ("outbounds", 0, "streamSettings", "realitySettings") and
+                       item.path[-1:] and item.path[-1] in identity]
+        if conflicting:
+            raise ValueError("REALITY target lists control client identity; remove separate SNI/key parameters: "
+                             + ", ".join(sorted(conflicting)))
+        profile = ParameterSpec.from_dict("reality_profile", {
+            "type": "enum", "values": profiles, "target": "context", "path": [],
+            "conditions": {security.name: {"equals": "reality"}},
+        })
+        return (*self.parameters, profile)
+
+    @property
+    def has_reality_candidates(self) -> bool:
+        """True when REALITY targets come from a list instead of one target/server_names pair."""
+        reality = self.testing.get("reality")
+        if not isinstance(reality, dict):
+            return False
+        return bool(reality.get("candidates") or reality.get("candidates_file"))
 
     @property
     def output_dir(self) -> Path:
@@ -132,11 +164,18 @@ def load_config(path: Path) -> ExperimentConfig:
     names = [parameter.name for parameter in params]
     if len(names) != len(set(names)):
         raise ValueError("Parameter names must be unique")
-    return ExperimentConfig(
+    config = ExperimentConfig(
         panel=raw["panel"], inbound=raw["inbound"], parameters=params,
         testing=raw.get("testing", {}), timeouts=raw.get("timeouts", {}),
         output=raw.get("output", {}), source_path=path.resolve(),
     )
+    config.search_parameters()
+    return config
+
+
+REALITY_CANDIDATES_UNCHECKED_WARNING = (
+    "REALITY targets are structurally valid but have not been checked from the panel server"
+)
 
 
 def offline_warnings(config: ExperimentConfig) -> list[str]:
@@ -151,7 +190,8 @@ def offline_warnings(config: ExperimentConfig) -> list[str]:
     )
     if reality_selected:
         reality = config.testing.get("reality", {})
-        if not isinstance(reality, dict) or not reality.get("target") or not reality.get("server_names"):
+        if not isinstance(reality, dict) or not (reality.get("target") and reality.get("server_names")
+                                                  or reality.get("candidates") or reality.get("candidates_file")):
             warnings.append(
                 "REALITY is selected, but testing.reality.target/server_names are incomplete; "
                 "candidates may be skipped if the source inbound has no REALITY settings."

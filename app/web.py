@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import itertools
 import json
 import re
 import socket
@@ -22,7 +23,8 @@ from typing import Any
 import yaml
 
 from app.api.three_xui import ThreeXUIClient
-from app.config import ExperimentConfig, _expand_env, load_config, offline_warnings
+from app.config import ExperimentConfig, _expand_env, load_config, offline_warnings, REALITY_CANDIDATES_UNCHECKED_WARNING
+from app.xray.reality import configured_candidates, parse_candidates
 from app.parameters.generator import CombinationGenerator
 from app.parameters.models import ParameterSpec
 from app.parameters.registry import parameter_registry
@@ -37,7 +39,9 @@ def _config_from_raw(raw: dict[str, Any], source: Path | None = None) -> Experim
         if key not in raw:
             raise ValueError(f"Missing required section: {key}")
     parameters = tuple(ParameterSpec.from_dict(name, definition) for name, definition in raw["parameters"].items())
-    return ExperimentConfig(raw["panel"], raw["inbound"], parameters, raw.get("testing", {}), raw.get("timeouts", {}), raw.get("output", {}), source)
+    config = ExperimentConfig(raw["panel"], raw["inbound"], parameters, raw.get("testing", {}), raw.get("timeouts", {}), raw.get("output", {}), source)
+    config.search_parameters()
+    return config
 
 
 def _compact_configuration_label(serialized: Any, number: int) -> str:
@@ -79,6 +83,10 @@ class WebService:
         panel = data.setdefault("panel", {})
         for key in ("api_token", "password", "username"):
             panel.pop(key, None)
+        reality = data.get("testing", {}).get("reality")
+        if isinstance(reality, dict) and reality.get("candidates_file"):
+            reality["candidates"] = configured_candidates(data["testing"], self.config_path)
+            reality.pop("candidates_file", None)
         return data
 
     def save(self, incoming: dict[str, Any]) -> dict[str, Any]:
@@ -108,7 +116,7 @@ class WebService:
 
     def preview(self, raw: dict[str, Any]) -> dict[str, Any]:
         config = _config_from_raw(raw, self.config_path)
-        generator = CombinationGenerator(config.parameters)
+        generator = CombinationGenerator(config.search_parameters())
         warnings = self._preview_warnings(config)
         if config.combination_strategy == "mutation":
             plan = generator.mutations()
@@ -117,13 +125,13 @@ class WebService:
                     "planned_combinations": config.max_combinations,
                     "planned_runs": config.max_combinations * config.runs_per_combination,
                     "initial_candidates": len(plan),
-                    "mutable_parameters": sum(parameter.mutate for parameter in config.parameters),
-                    "fixed_parameters": sum(not parameter.mutate for parameter in config.parameters),
+                    "mutable_parameters": sum(parameter.mutate for parameter in generator.parameters),
+                    "fixed_parameters": sum(not parameter.mutate for parameter in generator.parameters),
                     "mutation_generations": config.mutation_generations,
                     "beam_width": config.beam_width,
                     "children_per_parent": config.children_per_parent,
                     "limit": config.max_combinations, "truncated": False,
-                    "preview": [mask_parameter_values(item.values, config.parameters) for item in plan[:20]], "warnings": warnings}
+                    "preview": [mask_parameter_values(item.values, generator.parameters) for item in plan[:20]], "warnings": warnings}
         if config.combination_strategy == "pairwise":
             plan = generator.pairwise()
             limited = plan[:config.max_combinations]
@@ -131,17 +139,32 @@ class WebService:
                     "planned_combinations": len(limited), "designed_combinations": len(plan),
                     "planned_runs": len(limited) * config.runs_per_combination,
                     "limit": config.max_combinations, "truncated": len(plan) > len(limited),
-                    "preview": [mask_parameter_values(item.values, config.parameters) for item in limited[:20]], "warnings": warnings}
-        preview = generator.preview(min(20, config.max_combinations))
+                    "preview": [mask_parameter_values(item.values, generator.parameters) for item in limited[:20]], "warnings": warnings}
+        plan = list(itertools.islice(generator.iter_valid(), config.max_combinations))
         return {"strategy": "exhaustive", "raw_combinations": generator.raw_count,
-                "planned_combinations": min(generator.raw_count, config.max_combinations),
-                "planned_runs": min(generator.raw_count, config.max_combinations) * config.runs_per_combination,
+                "planned_combinations": len(plan),
+                "planned_runs": len(plan) * config.runs_per_combination,
                 "limit": config.max_combinations, "truncated": generator.raw_count > config.max_combinations,
-                "preview": [mask_parameter_values(item.values, config.parameters) for item in preview], "warnings": warnings}
+                "preview": [mask_parameter_values(item.values, generator.parameters) for item in plan[:20]],
+                "warnings": warnings}
 
     @staticmethod
     def _preview_warnings(config: ExperimentConfig) -> list[str]:
-        return offline_warnings(config)
+        warnings = offline_warnings(config)
+        if config.has_reality_candidates:
+            warnings.append(REALITY_CANDIDATES_UNCHECKED_WARNING)
+        return warnings
+
+    @staticmethod
+    def import_reality_candidates(content: str) -> list[dict[str, str]]:
+        if len(content.encode("utf-8")) > 128 * 1024:
+            raise ValueError("REALITY candidate file is too large")
+        return parse_candidates(content)
+
+    @staticmethod
+    def default_reality_candidates() -> list[dict[str, str]]:
+        path = Path(__file__).resolve().parents[1] / "configs" / "reality-targets.yaml"
+        return parse_candidates(path.read_text(encoding="utf-8"))
 
     def list_inbounds(self, panel_options: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         raw = self.raw_config()
@@ -218,7 +241,7 @@ class WebService:
         run_directory = base_directory / "runs" / f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{job_id[:8]}"
         output["directory"] = str(run_directory)
         config = _config_from_raw(raw, self.config_path)
-        generator = CombinationGenerator(config.parameters)
+        generator = CombinationGenerator(config.search_parameters())
         initial_candidates = len(generator.mutations()) if config.combination_strategy == "mutation" else None
         designed_count = len(generator.pairwise()) if config.combination_strategy == "pairwise" else None
         planned = (config.max_combinations if config.combination_strategy == "mutation" else
@@ -232,23 +255,26 @@ class WebService:
                                "skipped": 0, "warnings": self._preview_warnings(config)}
             if initial_candidates is not None:
                 self._run_state.update({"initial_candidates": initial_candidates,
-                                        "mutable_parameters": sum(parameter.mutate for parameter in config.parameters),
-                                        "fixed_parameters": sum(not parameter.mutate for parameter in config.parameters),
+                                        "mutable_parameters": sum(parameter.mutate for parameter in generator.parameters),
+                                        "fixed_parameters": sum(not parameter.mutate for parameter in generator.parameters),
                                         "mutation_generations": config.mutation_generations,
                                         "beam_width": config.beam_width,
                                         "children_per_parent": config.children_per_parent})
 
         def progress(update: dict[str, Any]) -> None:
             with self._run_lock:
-                self._run_state.update({key: update[key] for key in ("completed", "failed", "test_id", "run")
+                self._run_state.update({key: update[key] for key in ("completed", "failed", "test_id", "run",
+                                                               "planned_combinations", "planned_runs")
                                         if key in update})
                 for key in ("skipped", "warnings"):
                     if key in update:
                         self._run_state[key] = update[key]
                 if "generation" in update:
                     self._run_state["generation"] = update["generation"]
-                self._run_state["last_configuration"] = update["configuration"]
-                self._run_state["last_result"] = update["result"]
+                if "configuration" in update:
+                    self._run_state["last_configuration"] = update["configuration"]
+                if "result" in update:
+                    self._run_state["last_result"] = update["result"]
 
         def worker() -> None:
             async def action() -> dict[str, Any]:
@@ -418,6 +444,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(self.service.list_inbounds())
             elif self.path == "/api/registry":
                 self._json(self.service.registry())
+            elif self.path == "/api/reality/default-candidates":
+                self._json(self.service.default_reality_candidates())
             elif self.path == "/api/run/status":
                 self._json(self.service.run_status())
             elif self.path == "/api/run/dashboard":
@@ -457,6 +485,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(self.service.list_inbounds(body))
             elif self.path == "/api/config":
                 self._json(self.service.save(body))
+            elif self.path == "/api/reality/import":
+                self._json(self.service.import_reality_candidates(str(body.get("content", ""))))
             elif self.path == "/api/run/start":
                 self._json(self.service.start_run(body), HTTPStatus.ACCEPTED)
             elif self.path == "/api/run/stop":
