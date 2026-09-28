@@ -90,7 +90,6 @@ def test_reason_code_mapping_never_returns_raw_output() -> None:
     assert reason_code_for_output(f"failed to build REALITY config {secret}") == "client_config_reality_parameters_invalid"
     assert reason_code_for_output("unknown cipher method: bogus") == "client_config_unsupported_cipher"
     assert reason_code_for_output("something new") == CORE_REJECTED
-    assert CORE_REJECTED in reason_code_for_output("something new")
 
 
 def test_missing_binary_degrades_without_failing_the_run(tmp_path: Path) -> None:
