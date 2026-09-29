@@ -96,6 +96,114 @@ def test_unknown_routes_and_missing_reports_are_rejected(backend) -> None:
     base_url, _ = backend
     assert call(base_url + "/api/nope")[0] == 404
     assert call(base_url + "/api/nope", {})[0] == 404
-    assert call(base_url + "/api/runs/20260923-120000-abc123ef/results.csv")[0] == 400, "the download route needs /download/"
+    assert call(base_url + "/api/runs/20260923-120000-abc123ef/results.csv")[0] == 404, "the download route needs /download/"
     status, _, body = call(base_url + "/api/runs/20260923-120000-abc123ef/download/results.csv")
-    assert status == 400 and json.loads(body)["error"] == "FileNotFoundError"
+    assert status == 404 and json.loads(body)["error"] == "FileNotFoundError"
+    assert call(base_url + "/api/runs/20260923-120000-abc123ef/download/../../config.yaml")[0] == 404
+
+
+def test_internal_and_conflict_errors_are_distinguished(backend, monkeypatch) -> None:
+    base_url, _ = backend
+    service = Handler.service
+
+    def conflict(self) -> None:
+        raise RuntimeError("A test run is already active")
+
+    def broken(self) -> None:
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(WebService, "run_status", conflict)
+    status, _, body = call(base_url + "/api/run/status")
+    assert status == 409 and "already active" in json.loads(body)["message"]
+
+    monkeypatch.setattr(WebService, "run_status", broken)
+    status, _, body = call(base_url + "/api/run/status")
+    assert status == 500 and json.loads(body)["message"] == "Internal server error"
+
+
+def test_stop_endpoint_answers_for_a_run_without_a_body_argument(backend) -> None:
+    """POST /api/run/stop не принимает тело: передача его позиционно давала TypeError,
+    который HTTP-слой маскировал в «Internal server error»."""
+    base_url, _ = backend
+    service = Handler.service
+    service._run_state = {"id": "job", "status": "running", "planned_runs": 4}
+
+    status, content_type, body = call(base_url + "/api/run/stop", {})
+    assert status == 202 and content_type.startswith("application/json")
+    assert json.loads(body)["status"] == "stopping"
+    assert service._stop_requested is True
+
+
+def test_dashboard_reads_the_journal_incrementally(backend) -> None:
+    base_url, _ = backend
+    service = Handler.service
+    run_dir = service.runs_directory() / "20260923-120000-abc123ef"
+    run_dir.mkdir(parents=True)
+    service._run_state = {"status": "running", "planned_runs": 4, "result_directory": str(run_dir)}
+
+    def record(status: str, digest: str) -> dict:
+        return {"phase": "search", "configuration_hash": digest, "configuration": {"network": "tcp"},
+                "test_id": "t", "run": 1, "result": {"status": status, "score": 0.5}}
+
+    journal = run_dir / "results.jsonl"
+    journal.write_text(json.dumps(record("OK", "h1")) + "\n", encoding="utf-8")
+    first = json.loads(call(base_url + "/api/run/dashboard")[2])
+    assert first["records"] == 1 and first["attempted"] == 1
+
+    with journal.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(record("OK", "h2")) + "\n")
+        stream.write(json.dumps(record("SKIPPED", "h3")) + "\n")
+    second = json.loads(call(base_url + "/api/run/dashboard")[2])
+    assert second["records"] == 3 and second["skipped"] == 1
+    assert len(second["candidates"]) == 2
+
+    # No changes since the last poll: the cached result must stay identical.
+    third = json.loads(call(base_url + "/api/run/dashboard")[2])
+    assert third == second
+
+
+def test_list_runs_caches_the_record_count_between_changes(backend) -> None:
+    base_url, _ = backend
+    service = Handler.service
+    run_dir = service.runs_directory() / "20260923-120000-abc123ef"
+    run_dir.mkdir(parents=True)
+    journal = run_dir / "results.jsonl"
+    journal.write_text('{"a": 1}\n{"a": 2}\n', encoding="utf-8")
+
+    assert json.loads(call(base_url + "/api/runs")[2])[0]["records"] == 2
+
+    # Same size and mtime, different content: the cached count must survive.
+    stamp = journal.stat().st_mtime_ns
+    journal.write_text('{"b": 1}\n{"b": 2}\n', encoding="utf-8")
+    import os
+    os.utime(journal, ns=(stamp, stamp))
+    assert json.loads(call(base_url + "/api/runs")[2])[0]["records"] == 2
+
+    journal.write_text('{"a": 1}\n{"a": 2}\n{"a": 3}\n', encoding="utf-8")
+    assert json.loads(call(base_url + "/api/runs")[2])[0]["records"] == 3
+
+
+def test_unknown_static_paths_are_not_served(backend) -> None:
+    base_url, _ = backend
+    assert call(base_url + "/static/nope.js")[0] == 404
+    assert call(base_url + "/static/nope.css")[0] == 404
+    assert call(base_url + "/../config.yaml")[0] == 404
+
+
+def test_page_references_and_backend_serves_static_assets(backend) -> None:
+    """The split page must link the split assets, and both must be served."""
+    base_url, _ = backend
+    status, _, body = call(base_url + "/")
+    assert status == 200
+    page = body.decode("utf-8")
+    assert page.count('/static/app.js') == 1
+    assert page.count('/static/app.css') == 1
+    assert "<script>" not in page.replace('<script src="/static/app.js" defer></script>', "")
+
+    status, content_type, body = call(base_url + "/static/app.js")
+    assert status == 200 and content_type.startswith("text/javascript")
+    assert b"function buildDraft" in body
+
+    status, content_type, body = call(base_url + "/static/app.css")
+    assert status == 200 and content_type.startswith("text/css")
+    assert b".candidate-table" in body

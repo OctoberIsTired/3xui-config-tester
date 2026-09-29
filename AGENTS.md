@@ -6,20 +6,25 @@
 
 ## Проект и команды
 
-- Python 3.12+, зависимости через `uv`; CLI — `app/main.py`, точка входа
-  `uv run 3xui-tester`.
+- Python 3.12+, зависимости через `uv`; точка входа `uv run 3xui-tester`
+  запускает Web UI (`app/web.py`).
 - Установка для разработки: `uv sync --extra dev`.
 - Локальные тесты: `uv run pytest`.
-- Проверка плана без панели: `uv run 3xui-tester combinations preview -c configs/example.yaml`.
-- `test --dry-run` обращается к реальной панели. Обычный `test` создаёт или
-  обновляет inbound и запускает сетевые измерения; не используйте его как
-  проверку изменений кода без явного контекста реальной панели.
+- Проверка плана без панели — preview на вкладке «План» Web UI; в тестах —
+  `WebService.preview` (см. `tests/test_web.py`).
+- Запуск теста создаёт или обновляет inbound и запускает сетевые измерения;
+  не используйте его как проверку изменений кода без явного контекста реальной
+  панели.
 
 ## Где менять код
 
 - Конфигурация и значения по умолчанию: `app/config.py`, пример YAML —
   `configs/example.yaml`.
-- CLI и Web UI: `app/main.py`, `app/web.py`, `app/web_ui.html`.
+- Web UI: `app/web.py`, `app/web_ui.html` (разметка) + `app/static/app.js`,
+  `app/static/app.css` (раздаются Handler'ом по `/static/*`). Черновик
+  конфигурации собирает один общий `buildDraft()` — не плодите вторых
+  сборщиков. CLI-режима нет: точка входа
+  `3xui-tester` запускает Web UI.
 - Доступ к 3x-ui: `app/api/`; жизненный цикл inbound: `app/inbound/manager.py`.
 - Параметры и построение плана: `app/parameters/`.
 - Выполнение, клиент Xray и измерения: `app/testing/`, `app/xray/`.
@@ -36,7 +41,8 @@
   панель недоступна и автоматический cleanup не удался.
 - `results.jsonl` — источник для экспорта, `state.json` — checkpoint.
   Сохраняйте совместимость ключа повтора `<configuration-hash>:<run-number>`
-  и семантики `--resume` при изменении runner или форматов.
+  при изменении runner или форматов; механизм `resume` в runner сейчас не
+  используется Web UI, но семантику ключей не ломайте.
 - Не выводите секреты панели в браузер, сообщения об ошибках и артефакты.
   `configs/local.yaml`, `.env`, каталоги результатов и
   `source-inbound-backup.json` могут содержать чувствительные данные; не

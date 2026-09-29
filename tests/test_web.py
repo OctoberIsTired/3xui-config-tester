@@ -5,6 +5,11 @@ import yaml
 
 from app.results.writer import ResultStore
 from app.web import PAGE, WebService, _compact_configuration_label
+import app.web as web_module
+
+STATIC_DIR = Path(web_module.__file__).with_name("static")
+APP_JS = STATIC_DIR.joinpath("app.js").read_text(encoding="utf-8")
+APP_CSS = STATIC_DIR.joinpath("app.css").read_text(encoding="utf-8")
 
 
 def test_reality_file_import_is_available_in_web_ui() -> None:
@@ -13,14 +18,80 @@ def test_reality_file_import_is_available_in_web_ui() -> None:
     assert rows == [{"target": "www.microsoft.com:443", "server_name": "www.microsoft.com"}]
     assert len(WebService.default_reality_candidates()) == 10
     assert 'id="realityFile"' in PAGE
-    assert "/api/reality/import" in PAGE
+    assert "/api/reality/import" in APP_JS
 
 
 def test_web_ui_drops_reality_identity_parameters_from_every_draft() -> None:
     """Preview, run and save all send drafts; all of them must respect the target list."""
-    assert "function stripRealityIdentity(draft)" in PAGE
-    assert PAGE.count("return stripRealityIdentity(draft)") == 2
-    assert "delete draft.parameters.reality_server_name" not in PAGE
+    assert "function stripRealityIdentity(draft)" in APP_JS
+    # Один общий buildDraft: обе его ветки (полный черновик и подключение)
+    # проходят через stripRealityIdentity.
+    assert APP_JS.count("return stripRealityIdentity(") == 2
+    assert "delete draft.parameters.reality_server_name" not in APP_JS
+
+
+def test_web_ui_marks_parameters_owned_by_the_reality_target_list() -> None:
+    """A parameter the list strips from every draft has to look list-owned in the UI."""
+    assert "function listManagedRealityPath(path)" in APP_JS
+    assert "const REALITY_LIST_MANAGED_NOTE" in APP_JS
+    # The stripper and every mark share one predicate, so a shown mark cannot
+    # disagree with what actually leaves the draft.
+    assert "if (realityListOwns(item?.path || [])) delete draft.parameters[name];" in APP_JS
+    # definition, stripper, renderPresets, card, customCard
+    assert APP_JS.count("realityListOwns(") == 5
+    assert APP_JS.count("REALITY_LIST_MANAGED_NOTE") == 4  # definition, three marks
+    leaves = APP_JS.split("const REALITY_IDENTITY_LEAVES = ", 1)[1].split("];", 1)[0]
+    for leaf in ("serverName", "shortId", "password", "publicKey"):
+        assert f'"{leaf}"' in leaves
+    # Loading or clearing the list re-renders, or a stale mark would survive.
+    assert "function showRealityCandidates" in APP_JS
+    show_body = APP_JS.split("function showRealityCandidates", 1)[1].split("function selectRealityCandidates", 1)[0]
+    assert "renderPresets();" in show_body and "renderCards();" in show_body
+
+
+def test_web_ui_uses_one_shared_draft_builder() -> None:
+    """The duplicated read()/connectionDraft() builders must stay merged."""
+    assert APP_JS.count("function buildDraft(") == 1
+    assert "function read() {" in APP_JS
+    # Полный черновик: preview/run/save; подключение — своя ветка того же сборщика.
+    assert "return buildDraft({ includePlan: true });" in APP_JS
+    assert 'buildDraft({ includePlan: false })' in APP_JS
+    assert "function connectionDraft" not in APP_JS
+
+
+def test_web_ui_keeps_split_markup_and_assets() -> None:
+    """The page is markup only; the logic and styles live in static assets."""
+    assert '<link rel="stylesheet" href="/static/app.css">' in PAGE
+    assert '<script src="/static/app.js" defer></script>' in PAGE
+    assert "<style>" not in PAGE and "function buildDraft" not in PAGE
+    assert "candidate-table" in APP_CSS and "badge-running" in APP_CSS
+
+
+def test_web_ui_keeps_expanded_details_across_redraws() -> None:
+    """Поллинг запуска перерисовывает карточку статуса и таблицу кандидатов целиком,
+    поэтому раскрытые блоки должны восстанавливаться по ключу, а не сворачиваться."""
+    assert "function openDetailsKeys(root)" in APP_JS
+    assert "function restoreOpenDetails(root, keys)" in APP_JS
+    # definition + renderRun + renderDashboard: у обоих сборщиков одна пара помощников.
+    assert APP_JS.count("openDetailsKeys(") == 3
+    assert APP_JS.count("restoreOpenDetails(") == 3
+    # Ключ есть и у блоков карточки статуса, и у строк таблицы кандидатов.
+    block = APP_JS.split("function detailsBlock(", 1)[1].split("</details>`;", 1)[0]
+    assert 'data-key="' in block
+    assert APP_JS.count('detailsBlock("') == 3  # lastConfiguration, lastMetrics, summary
+    assert "details.dataset.key = candidate.label;" in APP_JS
+    assert "details.dataset.label" not in APP_JS
+
+
+def test_web_ui_backfills_security_for_reality_lists() -> None:
+    """A REALITY list without a security parameter must be repaired at the
+    draft boundary, not rejected by the server after 'Copy inbound' drops it."""
+    guard = APP_JS.split("if (realityCandidates.length) {", 1)[1].split("parameters.security = security;", 1)[0]
+    assert 'security.values = [...(security.values || []), "reality"]' in guard
+    assert '"streamSettings", "security"' in guard
+    # The guard lives inside the single shared builder, so every call site gets it.
+    builder_start = APP_JS.index("function buildDraft(")
+    assert APP_JS.index("if (realityCandidates.length) {", builder_start) > builder_start
 
 
 def test_web_exposes_cli_candidate_file_as_yaml_snapshot(tmp_path: Path) -> None:

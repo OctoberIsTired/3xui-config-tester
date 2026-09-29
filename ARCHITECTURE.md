@@ -15,8 +15,8 @@ payload и не проверяет доступность адресов изм�
 ## Компоненты
 
 ```text
-app/main.py (CLI)             app/web.py + web_ui.html (локальный UI)
-          \                    /
+app/web.py + web_ui.html + static/app.js + static/app.css (точка входа `3xui-tester`, локальный UI)
+          |
            app/testing/runner.py
              ├─ parameters/{models,generator,dependencies,mapping}.py
              ├─ inbound/manager.py ── api/base.py ── api/three_xui.py
@@ -47,15 +47,14 @@ YAML. Каждый запуск пишет в отдельный каталог 
 
 ## План и выполнение
 
-1. `load_config` загружает параметры и значения из YAML. `combinations preview`
+1. `load_config` загружает параметры и значения из YAML. Preview плана в Web UI
    строит план локально без обращения к панели.
 2. `ExperimentRunner.preflight` проверяет зависимости, аутентификацию,
    обязательные пути OpenAPI, исходный inbound, статус Xray на панели и наличие
    `testing.urls`. Он не отправляет запросы к этим URL. Для `existing` снимок
    исходного inbound записывается в `source-inbound-backup.json` уже на этом
-   этапе, в том числе при `--dry-run`.
-3. `--dry-run` возвращает план и метаданные до изменения inbound. При обычном
-   запуске `InboundManager` создаёт клон или выбирает исходный inbound для
+   этапе.
+3. При запуске `InboundManager` создаёт клон или выбирает исходный inbound для
    режима `existing`.
 4. Для каждого повтора runner применяет параметры к базовому payload, строит
    клиентский конфиг и проверяет его до сетевого этапа (см. ниже). Отклонённая
@@ -70,8 +69,8 @@ YAML. Каждый запуск пишет в отдельный каталог 
 `pairwise` заранее строит план с покрытием пар значений. `exhaustive` лениво
 перебирает валидные комбинации. `mutation` начинает с базовой конфигурации,
 проверяет первое поколение и развивает успешные варианты в следующих
-поколениях. Все стратегии ограничиваются `testing.max_combinations` и
-необязательным `--max-tests`; `testing.max_failed_runs` может сократить число
+поколениях. Все стратегии ограничиваются `testing.max_combinations`;
+`testing.max_failed_runs` может сократить число
 повторов отдельной конфигурации.
 
 ## Проверка клиентских конфигураций
@@ -134,8 +133,7 @@ Xray к адресам из `testing.urls`. ICMP-проверка идёт к а
 
 `results.jsonl` — основной журнал завершённых повторов. `state.json` хранит
 метаданные эксперимента и ключи `<configuration-hash>:<run-number>`.
-`--resume` требует прежний `output.directory` и `state.json`: runner сверяет
-подпись плана, восстанавливает завершённые ключи из журнала и пропускает их.
+Каждый запуск Web UI пишет в собственный каталог `output.directory/runs/`.
 CSV, JSON-массив и XLSX пересоздаются из журнала по `output.formats`.
 
 При штатной остановке runner делает cleanup. Аварийное прекращение процесса,

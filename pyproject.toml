@@ -11,15 +11,13 @@ dependencies = [
   "httpx[socks]>=0.27",
   "openpyxl>=3.1",
   "PyYAML>=6.0",
-  "rich>=13.7",
-  "typer>=0.12",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "respx>=0.21"]
 
 [project.scripts]
-3xui-tester = "app.main:main"
+3xui-tester = "app.web:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

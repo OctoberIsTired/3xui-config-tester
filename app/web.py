@@ -7,11 +7,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import inspect
 import itertools
 import json
 import re
 import socket
 import threading
+import traceback
 import uuid
 from copy import deepcopy
 from datetime import datetime
@@ -64,6 +66,8 @@ class WebService:
         self._run_state: dict[str, Any] = {"status": "idle"}
         self._runner: ExperimentRunner | None = None
         self._stop_requested = False
+        self._dashboard_cache: dict[str, dict[str, Any]] = {}
+        self._runs_cache: dict[str, dict[str, Any]] = {}
 
     def raw_config(self) -> dict[str, Any]:
         if self.config_path.exists():
@@ -342,16 +346,33 @@ class WebService:
         for directory in sorted(root.iterdir(), key=lambda item: item.name, reverse=True):
             if not directory.is_dir() or directory.is_symlink() or not self.RUN_ID.fullmatch(directory.name):
                 continue
-            journal = directory / "results.jsonl"
-            files = [name for name in self.REPORT_FILES if (directory / name).is_file()]
-            if journal.is_file():
-                with journal.open("rb") as stream:
-                    records = sum(bool(line.strip()) for line in stream)
-            else:
-                records = 0
-            status = active.get("status") if Path(str(active.get("result_directory", ""))).resolve() == directory.resolve() else "saved"
-            runs.append({"id": directory.name, "status": status, "records": records, "files": files})
+            runs.append({"id": directory.name, **self._run_summary(directory), "status": "saved"})
+        for run in runs:
+            if Path(str(active.get("result_directory", ""))).resolve() == (root / run["id"]).resolve():
+                run["status"] = active.get("status")
         return runs
+
+    def _run_summary(self, directory: Path) -> dict[str, Any]:
+        """Record count and report list, cached until the journal or the directory changes."""
+        journal = directory / "results.jsonl"
+        try:
+            journal_stat = journal.stat() if journal.is_file() else None
+            directory_stat = directory.stat()
+        except OSError:
+            return {"records": 0, "files": []}
+        stamp = (journal_stat.st_mtime_ns if journal_stat else 0, journal_stat.st_size if journal_stat else 0,
+                 directory_stat.st_mtime_ns)
+        cached = self._runs_cache.get(directory.name)
+        if cached and cached["stamp"] == stamp:
+            return {"records": cached["records"], "files": cached["files"]}
+        if journal_stat:
+            with journal.open("rb") as stream:
+                records = sum(bool(line.strip()) for line in stream)
+        else:
+            records = 0
+        files = [name for name in self.REPORT_FILES if (directory / name).is_file()]
+        self._runs_cache[directory.name] = {"stamp": stamp, "records": records, "files": files}
+        return {"records": records, "files": files}
 
     def report_path(self, run_id: str, filename: str) -> Path:
         if not self.RUN_ID.fullmatch(run_id) or filename not in self.REPORT_FILES:
@@ -364,18 +385,46 @@ class WebService:
         return path
 
     def run_dashboard(self) -> dict[str, Any]:
-        """Summarize the durable journal so the UI survives a page refresh."""
+        """Summarize the durable journal so the UI survives a page refresh.
+
+        The journal is read incrementally: only bytes appended since the
+        previous poll are parsed, so a growing run does not re-read the file
+        every 1.5 s.
+        """
         with self._run_lock:
             state = deepcopy(self._run_state)
         directory = state.get("result_directory")
         if not directory:
             return {"records": 0, "planned_runs": state.get("planned_runs", 0), "candidates": []}
         path = Path(str(directory))
+        records = self._new_journal_records(path)
+        if records is None:
+            return {"records": 0, "planned_runs": state.get("planned_runs", 0), "candidates": []}
+        return self._dashboard_payload(records, state)
+
+    def _new_journal_records(self, path: Path) -> list[dict[str, Any]] | None:
         journal = path / "results.jsonl"
         if not journal.exists():
-            return {"records": 0, "planned_runs": state.get("planned_runs", 0), "candidates": []}
+            return None
+        cache = self._dashboard_cache.setdefault(str(path), {"offset": 0, "tail": b"", "records": []})
+        size = journal.stat().st_size
+        if size < cache["offset"]:
+            cache.update({"offset": 0, "tail": b"", "records": []})
+        with journal.open("rb") as stream:
+            stream.seek(cache["offset"])
+            pending = cache["tail"] + stream.read()
+        lines = pending.split(b"\n")
+        cache["tail"] = lines.pop()
+        for line in lines:
+            if line.strip():
+                cache["records"].append(json.loads(line.decode("utf-8")))
+        cache["offset"] += sum(len(line) + 1 for line in lines)
+        return cache["records"]
+
+    @staticmethod
+    def _dashboard_payload(records: list[dict[str, Any]], state: dict[str, Any]) -> dict[str, Any]:
+        path = Path(str(state["result_directory"]))
         store = ResultStore(path)
-        records = store.records()
         attempted = [item for item in records if item.get("result", {}).get("status") != "SKIPPED"]
         skipped = len(records) - len(attempted)
         summaries = store._summaries(attempted)
@@ -413,6 +462,15 @@ class WebService:
 
 class Handler(BaseHTTPRequestHandler):
     service: WebService
+    timeout = 30  # a hung client must not hold a worker thread forever
+
+    STATIC_ROOT = Path(__file__).with_name("static")
+    STATIC_TYPES = {".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8"}
+    DOWNLOAD_STATUS = {
+        ValueError: HTTPStatus.BAD_REQUEST,
+        FileNotFoundError: HTTPStatus.NOT_FOUND,
+        RuntimeError: HTTPStatus.CONFLICT,
+    }
 
     def log_message(self, *_: object) -> None:
         return
@@ -429,72 +487,109 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         return json.loads(self.rfile.read(length))
 
+    def _send_bytes(self, body: bytes, content_type: str, *, download: str | None = None) -> None:
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
+        if download:
+            self.send_header("Content-Disposition", f'attachment; filename="{download}"')
+            self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    # Dispatch is table-driven: (method, path) -> handler(self) / handler(self, body).
     def do_GET(self) -> None:  # noqa: N802
-        try:
-            if self.path == "/":
-                body = PAGE.encode("utf-8")
-                self.send_response(HTTPStatus.OK)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-            elif self.path == "/api/config":
-                self._json(self.service.public_config())
-            elif self.path == "/api/inbounds":
-                self._json(self.service.list_inbounds())
-            elif self.path == "/api/registry":
-                self._json(self.service.registry())
-            elif self.path == "/api/reality/default-candidates":
-                self._json(self.service.default_reality_candidates())
-            elif self.path == "/api/run/status":
-                self._json(self.service.run_status())
-            elif self.path == "/api/run/dashboard":
-                self._json(self.service.run_dashboard())
-            elif self.path == "/api/runs":
-                self._json(self.service.list_runs())
-            elif self.path.startswith("/api/runs/"):
-                parts = self.path.split("/")
-                if len(parts) != 6 or parts[4] != "download":
-                    raise ValueError("Unknown report")
-                report = self.service.report_path(parts[3], parts[5])
-                body = report.read_bytes()
-                content_type = {
-                    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    ".csv": "text/csv; charset=utf-8",
-                    ".json": "application/json; charset=utf-8",
-                    ".jsonl": "application/x-ndjson; charset=utf-8",
-                }[report.suffix]
-                self.send_response(HTTPStatus.OK)
-                self.send_header("Content-Type", content_type)
-                self.send_header("Content-Disposition", f'attachment; filename="{report.name}"')
-                self.send_header("Cache-Control", "no-store")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-            else:
-                self._json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
-        except Exception as error:
-            self._json({"error": type(error).__name__, "message": str(error)}, HTTPStatus.BAD_REQUEST)
+        self._dispatch(GET_ROUTES)
 
     def do_POST(self) -> None:  # noqa: N802
         try:
             body = self._body()
-            if self.path == "/api/preview":
-                self._json(self.service.preview(body))
-            elif self.path == "/api/inbounds":
-                self._json(self.service.list_inbounds(body))
-            elif self.path == "/api/config":
-                self._json(self.service.save(body))
-            elif self.path == "/api/reality/import":
-                self._json(self.service.import_reality_candidates(str(body.get("content", ""))))
-            elif self.path == "/api/run/start":
-                self._json(self.service.start_run(body), HTTPStatus.ACCEPTED)
-            elif self.path == "/api/run/stop":
-                self._json(self.service.stop_run(), HTTPStatus.ACCEPTED)
+        except (ValueError, json.JSONDecodeError) as error:
+            self._json(self._error_payload(error), HTTPStatus.BAD_REQUEST)
+            return
+        self._dispatch(POST_ROUTES, body)
+
+    def _dispatch(self, routes: dict[str, Any], body: dict[str, Any] | None = None) -> None:
+        try:
+            entry = routes.get(self.path)
+            if entry is not None:
+                handler, status = entry
+                result = handler(self.service) if body is None else handler(self.service, body)
+                self._json(result, status)
+            elif not self.path.startswith("/api/"):
+                self._serve_page_or_static()
+            elif (download := DOWNLOAD_ROUTE.fullmatch(self.path)) is not None:
+                self._serve_download(download.group(1), download.group(2))
             else:
                 self._json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
         except Exception as error:
-            self._json({"error": type(error).__name__, "message": str(error)}, HTTPStatus.BAD_REQUEST)
+            status = self.DOWNLOAD_STATUS.get(type(error), HTTPStatus.INTERNAL_SERVER_ERROR)
+            self._json(self._error_payload(error, masked=status is HTTPStatus.INTERNAL_SERVER_ERROR), status)
+
+    @staticmethod
+    def _error_payload(error: Exception, *, masked: bool = False) -> dict[str, Any]:
+        if masked:
+            traceback.print_exc()
+            return {"error": type(error).__name__, "message": "Internal server error"}
+        return {"error": type(error).__name__, "message": str(error)}
+
+    def _serve_page_or_static(self) -> None:
+        if self.path == "/":
+            self._send_bytes(PAGE.encode("utf-8"), "text/html; charset=utf-8")
+            return
+        static = self.STATIC_ROOT / self.path.removeprefix("/static/").lstrip("/")
+        if self.path.startswith("/static/") and static.resolve().is_relative_to(self.STATIC_ROOT.resolve()) and static.is_file():
+            self._send_bytes(static.read_bytes(), self.STATIC_TYPES.get(static.suffix, "application/octet-stream"))
+        else:
+            self._json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
+
+    def _serve_download(self, run_id: str, filename: str) -> None:
+        report = self.service.report_path(run_id, filename)
+        content_type = {
+            ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ".csv": "text/csv; charset=utf-8",
+            ".json": "application/json; charset=utf-8",
+            ".jsonl": "application/x-ndjson; charset=utf-8",
+        }[report.suffix]
+        self._send_bytes(report.read_bytes(), content_type, download=report.name)
+
+
+def _service_call(name: str) -> Any:
+    return lambda service: getattr(service, name)()
+
+
+def _service_post(name: str | Any) -> Any:
+    """POST-обработчик: тело передаётся только методам, которые его принимают.
+
+    Раньше тело передавалось всегда, и эндпоинт без аргумента (`stop_run`)
+    падал с TypeError, который маскировался в «Internal server error».
+    """
+    method = name if callable(name) else getattr(WebService, name)
+    if len(inspect.signature(method).parameters) > 1:
+        return lambda service, body: method(service, body)
+    return lambda service, body: method(service)
+
+
+GET_ROUTES = {path: (_service_call(name), HTTPStatus.OK) for path, name in {
+    "/api/config": "public_config",
+    "/api/inbounds": "list_inbounds",
+    "/api/registry": "registry",
+    "/api/reality/default-candidates": "default_reality_candidates",
+    "/api/run/status": "run_status",
+    "/api/run/dashboard": "run_dashboard",
+    "/api/runs": "list_runs",
+}.items()}
+
+POST_ROUTES = {path: (_service_post(name), status) for path, (name, status) in {
+    "/api/config": ("save", HTTPStatus.OK),
+    "/api/preview": ("preview", HTTPStatus.OK),
+    "/api/inbounds": ("list_inbounds", HTTPStatus.OK),
+    "/api/reality/import": (lambda service, body: WebService.import_reality_candidates(str(body.get("content", ""))), HTTPStatus.OK),
+    "/api/run/start": ("start_run", HTTPStatus.ACCEPTED),
+    "/api/run/stop": ("stop_run", HTTPStatus.ACCEPTED),
+}.items()}
+
+DOWNLOAD_ROUTE = re.compile(r"/api/runs/(\d{8}-\d{6}-[0-9a-f]{8})/download/([\w.-]+)\Z")
 
 
 # Kept separate from the backend so the UI can evolve without mixing browser code and API code.
