@@ -1,4 +1,4 @@
-# Архитектура 3xui-tester
+# Архитектура 3xui-config-tester
 
 ## Назначение
 
@@ -15,7 +15,7 @@ payload и не проверяет доступность адресов изм�
 ## Компоненты
 
 ```text
-app/web.py + web_ui.html + static/app.js + static/app.css (точка входа `3xui-tester`, локальный UI)
+app/web.py + web_ui.html + static/app.js + static/app.css (точка входа `3xui-config-tester`, локальный UI)
           |
            app/testing/runner.py
              ├─ parameters/{models,generator,dependencies,mapping}.py
@@ -138,7 +138,7 @@ CSV, JSON-массив и XLSX пересоздаются из журнала п
 
 При штатной остановке runner делает cleanup. Аварийное прекращение процесса,
 сбой сети или ошибка cleanup могут оставить тестовый inbound на панели.
-Клоны имеют уникальную метку `[3xui-tester:...]` в `remark`. В режиме
+Клоны имеют уникальную метку `[3xui-config-tester:...]` в `remark`. В режиме
 `existing` файл `source-inbound-backup.json` содержит полный payload исходного
 inbound; его нужно защищать как секрет. На Ubuntu ему выставляются права
 `0600`. При проверке на Windows используйте ACL файловой системы.

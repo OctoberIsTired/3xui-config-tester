@@ -220,7 +220,7 @@ class ResultStore:
             candidates.add_table(table)
 
         dashboard.merge_cells("B2:Q2")
-        dashboard["B2"] = "3xui-tester — результаты эксперимента"
+        dashboard["B2"] = "3xui-config-tester — результаты эксперимента"
         dashboard.merge_cells("B3:Q3")
         dashboard["B3"] = "Номер #N на графиках и в рейтинге соответствует строке #N на листе Candidates; там указаны все параметры."
         dashboard.merge_cells("B4:Q4")

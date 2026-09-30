@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="360" viewBox="0 0 1200 360" role="img" aria-labelledby="title description">
-  <title id="title">3xui-tester</title>
+  <title id="title">3xui-config-tester</title>
   <desc id="description">Controlled Xray inbound experiments, from a temporary clone to measurable results.</desc>
   <defs>
     <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
@@ -22,7 +22,7 @@
   <g transform="translate(58 66)">
     <rect width="64" height="64" rx="16" fill="#14374c" stroke="#52d7d0" stroke-opacity=".65"/>
     <path d="M13 34h9l5-12 9 25 7-14h10" fill="none" stroke="url(#accent)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
-    <text x="84" y="42" fill="#f4fafc" font-family="Segoe UI, Inter, Arial, sans-serif" font-size="52" font-weight="750" letter-spacing="-2">3xui-tester</text>
+    <text x="84" y="42" fill="#f4fafc" font-family="Segoe UI, Inter, Arial, sans-serif" font-size="52" font-weight="750" letter-spacing="-2">3xui-config-tester</text>
     <text x="2" y="112" fill="#a9c8d6" font-family="Segoe UI, Inter, Arial, sans-serif" font-size="23">Explore configurations. Measure the result. Restore the state.</text>
     <g font-family="Segoe UI, Inter, Arial, sans-serif" font-size="16" font-weight="600">
       <rect y="145" width="112" height="34" rx="17" fill="#174359"/>

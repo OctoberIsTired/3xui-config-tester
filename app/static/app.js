@@ -1,4 +1,4 @@
-// 3xui-tester Web UI. All browser logic lives here; app/web_ui.html is markup only.
+// 3xui-config-tester Web UI. All browser logic lives here; app/web_ui.html is markup only.
 "use strict";
 
 let presets = {},

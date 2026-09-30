@@ -3,17 +3,17 @@
 </p>
 
 <p align="center">
-  <img src="media/hero.svg" alt="3xui-tester — проверка конфигураций inbound" width="100%">
+  <img src="media/hero.svg" alt="3xui-config-tester — проверка конфигураций inbound" width="100%">
 </p>
 
 <p align="center">
-  <a href="https://github.com/OctoberIsTired/3xui-tester/actions/workflows/tests.yml"><img src="https://github.com/OctoberIsTired/3xui-tester/actions/workflows/tests.yml/badge.svg" alt="Тесты"></a>
+  <a href="https://github.com/OctoberIsTired/3xui-config-tester/actions/workflows/tests.yml"><img src="https://github.com/OctoberIsTired/3xui-config-tester/actions/workflows/tests.yml/badge.svg" alt="Тесты"></a>
   <img src="https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white" alt="Python 3.12+">
 </p>
 
-# 3xui-tester
+# 3xui-config-tester
 
-`3xui-tester` проверяет варианты конфигурации inbound в 3x-ui/Xray. Он читает
+`3xui-config-tester` проверяет варианты конфигурации inbound в 3x-ui/Xray. Он читает
 OpenAPI работающей панели, получает исходный inbound, создаёт временный клон
 и запускает локальный Xray-клиент для измерений. Результат каждого повтора
 записывается в журнал, чтобы эксперимент можно было продолжить.
@@ -84,15 +84,15 @@ OpenAPI работающей панели, получает исходный inb
 Не добавляйте токены и пароли в Git. Детали по каждому шагу — ниже.
 
 ```bash
-git clone https://github.com/OctoberIsTired/3xui-tester.git
-cd 3xui-tester
+git clone https://github.com/OctoberIsTired/3xui-config-tester.git
+cd 3xui-config-tester
 uv sync --extra dev
 cp configs/example.yaml configs/local.yaml
 export PANEL_API_TOKEN='replace-with-token'
 ```
 
 ```bash
-uv run 3xui-tester --config configs/local.yaml --port 8765
+uv run 3xui-config-tester --config configs/local.yaml --port 8765
 ```
 
 Откройте `http://127.0.0.1:8765` **на той же машине**. Вся настройка, preview
@@ -197,8 +197,8 @@ uv python install 3.12
 **Linux (bash):**
 
 ```bash
-git clone https://github.com/OctoberIsTired/3xui-tester.git
-cd 3xui-tester
+git clone https://github.com/OctoberIsTired/3xui-config-tester.git
+cd 3xui-config-tester
 uv sync
 cp configs/example.yaml configs/local.yaml
 ```
@@ -206,8 +206,8 @@ cp configs/example.yaml configs/local.yaml
 **Windows (PowerShell):**
 
 ```powershell
-git clone https://github.com/OctoberIsTired/3xui-tester.git
-Set-Location 3xui-tester
+git clone https://github.com/OctoberIsTired/3xui-config-tester.git
+Set-Location 3xui-config-tester
 uv sync
 Copy-Item configs/example.yaml configs/local.yaml
 ```
@@ -295,7 +295,7 @@ output:
 PowerShell:
 
 ```text
-uv run 3xui-tester --config configs/local.yaml --port 8765
+uv run 3xui-config-tester --config configs/local.yaml --port 8765
 ```
 
 Откройте `http://127.0.0.1:8765` **на той же машине**. На вкладке «План»
@@ -352,7 +352,7 @@ inbound, временно задайте `parameters: {}` и новый `output.
 поиска.
 
 После окончания проверьте в панели, что inbound с пометкой
-`[3xui-tester:...]` удалён. Если процесс аварийно завершился или панель была
+`[3xui-config-tester:...]` удалён. Если процесс аварийно завершился или панель была
 недоступна во время очистки, клон может остаться: найдите именно его по этой
 пометке и проверьте вручную перед новым запуском. Не удаляйте исходный
 inbound.
@@ -435,7 +435,7 @@ Xray inbound на сервере, доступный тестовому клие
 Файл `configs/local.yaml` заранее создавать не нужно:
 
 ```bash
-uv run 3xui-tester --port 8765
+uv run 3xui-config-tester --port 8765
 ```
 
 Откройте `http://127.0.0.1:8765`, укажите адрес панели и загрузите список
@@ -581,7 +581,7 @@ REALITY и недопустимом адресе назначения. Таки�
 исходный inbound в режиме `existing`, затем сохраняет checkpoint и экспорт.
 На Windows останавливайте Web UI через `Ctrl+C`; на Linux также обрабатывается
 `SIGTERM`. После аварийного завершения процесса проверьте панель вручную:
-временный клон помечается префиксом `[3xui-tester:` в `remark`, а при
+временный клон помечается префиксом `[3xui-config-tester:` в `remark`, а при
 `existing` снимок находится в `source-inbound-backup.json`. Снимок содержит
 полный payload, включая потенциально чувствительные данные; на Ubuntu файл
 получает права `0600`.
@@ -601,12 +601,12 @@ REALITY и недопустимом адресе назначения. Таки�
 | `client_config_*` со статусом `SKIPPED` | Локальный Xray отклонил клиентский конфиг; `reason_code` указывает причину (транспорт, шифр, параметры REALITY, адрес назначения). Уберите несовместимое значение из `parameters` или проверьте `testing.server_address`. |
 | Предупреждение «The local Xray config check is unavailable» | Локальный бинарник не найден, не поддерживает `-test` или не отвечает: проверяется только структура конфига. Проверьте `testing.xray_binary` или отключите вызов ядра через `testing.validate_config: false`. |
 | `TIMEOUT` или неудачные HTTP-измерения | Проверьте маршрут до `testing.server_address`, тестовый порт, firewall, DNS и доступность `testing.urls` через тестовое подключение. |
-| В панели остался clone | Найдите inbound по уникальной пометке `[3xui-tester:...]`; после проверки его назначения удалите вручную. |
+| В панели остался clone | Найдите inbound по уникальной пометке `[3xui-config-tester:...]`; после проверки его назначения удалите вручную. |
 
 ## Безопасность
 
 - `clone` используется по умолчанию: тестовый inbound помечается
-  `[3xui-tester:...]` и удаляется при штатной очистке.
+  `[3xui-config-tester:...]` и удаляется при штатной очистке.
 - Режим `existing` временно изменяет исходный inbound и требует
   `inbound.allow_existing: true`; для восстановления записывается полный
   `source-inbound-backup.json`, который может содержать чувствительные данные.

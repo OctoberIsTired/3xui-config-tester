@@ -59,7 +59,7 @@ class InboundManager:
         for key in ("id", "clientStats", "up", "down", "total", "expiryTime"):
             clone.pop(key, None)
         clone["port"] = self.choose_port()
-        marker = f"[3xui-tester:{uuid.uuid4().hex}]"
+        marker = f"[3xui-config-tester:{uuid.uuid4().hex}]"
         clone["remark"] = f"{marker} {self.source_snapshot.get('remark', self.source_id)}"
         created = await self.client.create_inbound(clone)
         self.test_inbound_id = int(created.get("id", created.get("obj", 0))) if isinstance(created, dict) else 0

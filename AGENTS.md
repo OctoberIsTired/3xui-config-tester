@@ -6,7 +6,7 @@
 
 ## Проект и команды
 
-- Python 3.12+, зависимости через `uv`; точка входа `uv run 3xui-tester`
+- Python 3.12+, зависимости через `uv`; точка входа `uv run 3xui-config-tester`
   запускает Web UI (`app/web.py`).
 - Установка для разработки: `uv sync --extra dev`.
 - Локальные тесты: `uv run pytest`.
@@ -24,7 +24,7 @@
   `app/static/app.css` (раздаются Handler'ом по `/static/*`). Черновик
   конфигурации собирает один общий `buildDraft()` — не плодите вторых
   сборщиков. CLI-режима нет: точка входа
-  `3xui-tester` запускает Web UI.
+  `3xui-config-tester` запускает Web UI.
 - Доступ к 3x-ui: `app/api/`; жизненный цикл inbound: `app/inbound/manager.py`.
 - Параметры и построение плана: `app/parameters/`.
 - Выполнение, клиент Xray и измерения: `app/testing/`, `app/xray/`.

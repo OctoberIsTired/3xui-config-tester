@@ -1,4 +1,4 @@
-"""Local-only configuration UI for 3xui-tester.
+"""Local-only configuration UI for 3xui-config-tester.
 
 This intentionally has no authentication.  It binds only to 127.0.0.1 and
 never serializes panel credentials back to the browser.
@@ -316,7 +316,7 @@ class WebService:
                 with self._run_lock:
                     self._runner = None
 
-        threading.Thread(target=worker, name=f"3xui-test-{job_id[:8]}", daemon=True).start()
+        threading.Thread(target=worker, name=f"3xui-config-test-{job_id[:8]}", daemon=True).start()
         return self.run_status()
 
     def stop_run(self) -> dict[str, Any]:
@@ -609,13 +609,13 @@ class ExclusiveThreadingHTTPServer(ThreadingHTTPServer):
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Local configuration UI for 3xui-tester")
+    parser = argparse.ArgumentParser(description="Local configuration UI for 3xui-config-tester")
     parser.add_argument("--config", type=Path, default=Path("configs/local.yaml"))
     parser.add_argument("--port", type=int, default=8765)
     options = parser.parse_args()
     Handler.service = WebService(options.config)
     server = ExclusiveThreadingHTTPServer(("127.0.0.1", options.port), Handler)
-    print(f"3xui-tester UI: http://127.0.0.1:{options.port}")
+    print(f"3xui-config-tester UI: http://127.0.0.1:{options.port}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

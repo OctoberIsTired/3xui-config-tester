@@ -3,11 +3,11 @@
 </p>
 
 <p align="center">
-  <img src="media/hero.svg" alt="3xui-tester — controlled Xray inbound experiments" width="100%">
+  <img src="media/hero.svg" alt="3xui-config-tester — controlled Xray inbound experiments" width="100%">
 </p>
 
 <p align="center">
-  <a href="https://github.com/OctoberIsTired/3xui-tester/actions/workflows/tests.yml"><img src="https://github.com/OctoberIsTired/3xui-tester/actions/workflows/tests.yml/badge.svg" alt="Tests"></a>
+  <a href="https://github.com/OctoberIsTired/3xui-config-tester/actions/workflows/tests.yml"><img src="https://github.com/OctoberIsTired/3xui-config-tester/actions/workflows/tests.yml/badge.svg" alt="Tests"></a>
   <img src="https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white" alt="Python 3.12+">
   <img src="https://img.shields.io/badge/3x--ui-tested%20with%20v3.8.0-2189a4" alt="Tested with 3x-ui v3.8.0">
   <img src="https://img.shields.io/badge/Xray-tested%20with%20v26.9.9-238b72" alt="Tested with Xray v26.9.9">
@@ -20,13 +20,13 @@
 </p>
 
 > [!NOTE]
-> 3xui-tester is an independent tool for [3x-ui](https://github.com/MHSanaei/3x-ui).
+> 3xui-config-tester is an independent tool for [3x-ui](https://github.com/MHSanaei/3x-ui).
 > It is not part of the 3x-ui project.
 
 ## Why use it?
 
 Changing a live inbound to compare transports and client settings is slow and
-risky. 3xui-tester builds a bounded experiment, tests each candidate through a
+risky. 3xui-config-tester builds a bounded experiment, tests each candidate through a
 local Xray client, and writes every result to a durable journal. The default
 `clone` mode leaves the source inbound unchanged.
 
@@ -52,8 +52,8 @@ temporary inbound. The adapter has been tested with 3x-ui v3.8.0 and Xray v26.9.
 each run also checks the live panel's OpenAPI before changing an inbound.
 
 ```bash
-git clone https://github.com/OctoberIsTired/3xui-tester.git
-cd 3xui-tester
+git clone https://github.com/OctoberIsTired/3xui-config-tester.git
+cd 3xui-config-tester
 uv sync
 cp configs/example.yaml configs/local.yaml
 export PANEL_API_TOKEN='your-panel-api-token'
@@ -93,7 +93,7 @@ this setting when saving the configuration.
 
 ```bash
 # Start the local Web UI; everything happens in the browser.
-uv run 3xui-tester --config configs/local.yaml --port 8765
+uv run 3xui-config-tester --config configs/local.yaml --port 8765
 ```
 
 Open `http://127.0.0.1:8765` **on the same machine**. There is no separate
@@ -230,8 +230,8 @@ That binary also validates client configs in `run -test` mode; see
 **Linux (bash):**
 
 ```bash
-git clone https://github.com/OctoberIsTired/3xui-tester.git
-cd 3xui-tester
+git clone https://github.com/OctoberIsTired/3xui-config-tester.git
+cd 3xui-config-tester
 uv sync
 cp configs/example.yaml configs/local.yaml
 ```
@@ -239,8 +239,8 @@ cp configs/example.yaml configs/local.yaml
 **Windows (PowerShell):**
 
 ```powershell
-git clone https://github.com/OctoberIsTired/3xui-tester.git
-Set-Location 3xui-tester
+git clone https://github.com/OctoberIsTired/3xui-config-tester.git
+Set-Location 3xui-config-tester
 uv sync
 Copy-Item configs/example.yaml configs/local.yaml
 ```
@@ -319,7 +319,7 @@ Start the backend from the repository root; the command is the same in bash
 and PowerShell:
 
 ```text
-uv run 3xui-tester --config configs/local.yaml --port 8765
+uv run 3xui-config-tester --config configs/local.yaml --port 8765
 ```
 
 Open `http://127.0.0.1:8765` **on the same machine**. On the Plan tab, press
@@ -369,7 +369,7 @@ known-good source inbound on its own, temporarily set `parameters: {}` and a
 new `output.directory` and repeat the run; restore the search parameters
 before the full plan.
 
-Afterwards confirm in the panel that the inbound marked `[3xui-tester:...]` is
+Afterwards confirm in the panel that the inbound marked `[3xui-config-tester:...]` is
 gone. An abnormal exit or an unreachable panel can leave the clone behind: find
 it by that marker and inspect it manually. Never delete the source inbound.
 
@@ -460,7 +460,7 @@ Set `PANEL_API_TOKEN` in your environment, then start the UI from the repository
 root. You do not need to create `configs/local.yaml` first:
 
 ```bash
-uv run 3xui-tester --port 8765
+uv run 3xui-config-tester --port 8765
 ```
 
 Open `http://127.0.0.1:8765`, enter the panel URL, and load the inbound list.
@@ -565,11 +565,11 @@ from the Web UI, journals, and exports; do not publish that file.
 | `client_config_*` with status `SKIPPED` | The local Xray rejected the client config; `reason_code` names the cause (transport, cipher, REALITY parameters, destination address). Remove the incompatible value from `parameters` or check `testing.server_address`. |
 | Warning "The local Xray config check is unavailable" | The local binary is missing, lacks `-test`, or does not answer, so only the config structure is checked. Fix `testing.xray_binary` or set `testing.validate_config: false`. |
 | `TIMEOUT` or failed HTTP measurements | Check the route to `testing.server_address`, the test port, the firewall, DNS, and `testing.urls` reachability through the test connection. |
-| A clone remains in the panel | Find the inbound by its `[3xui-tester:...]` marker and delete it manually after checking what it is. |
+| A clone remains in the panel | Find the inbound by its `[3xui-config-tester:...]` marker and delete it manually after checking what it is. |
 
 ## Safety boundaries
 
-- `clone` is the default. The test inbound is marked with `[3xui-tester:...]`
+- `clone` is the default. The test inbound is marked with `[3xui-config-tester:...]`
   and removed during normal cleanup.
 - `existing` changes the source inbound temporarily and requires
   `inbound.allow_existing: true`. It writes a full, potentially sensitive
