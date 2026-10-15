@@ -1,3 +1,4 @@
+import os
 import stat
 import subprocess
 from pathlib import Path
@@ -84,6 +85,51 @@ def test_windows_acl_verification_rejects_extra_explicit_account(tmp_path, windo
 
     monkeypatch.setattr(private_files, "_read_windows_acl", changed)
     with pytest.raises(private_files.PrivateFilePermissionError, match="unexpected account"):
+        private_files.secure_file(target)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="SDDL abbreviation resolution uses native Windows APIs")
+def test_windows_dacl_verification_resolves_sddl_sid_abbreviations() -> None:
+    owner = private_files._sid_text("LA")
+    assert owner.startswith("S-1-5-21-")
+    assert private_files._private_dacl("D:P(A;;FA;;;LA)(A;;FA;;;SY)", owner, directory=False)
+    assert private_files._private_dacl("D:P(A;OICI;FA;;;LA)(A;OICI;FA;;;SY)", owner, directory=True)
+    assert not private_files._private_dacl("D:P(A;OICI;FA;;;LA)(A;OICI;FA;;;LS)", owner, directory=True)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="SDDL abbreviation resolution uses native Windows APIs")
+def test_windows_dacl_verification_rejects_abbreviated_extra_accounts() -> None:
+    owner = private_files._sid_text("LA")
+    for abbreviation in ("BA", "BU", "WD", "OW", "AU", "AN"):
+        dacl = f"D:P(A;;FA;;;LA)(A;;FA;;;{abbreviation})"
+        assert not private_files._private_dacl(dacl, owner, directory=False)
+        assert not private_files._private_dacl(dacl, private_files._SYSTEM_SID, directory=False)
+
+
+def test_windows_accepts_token_owner_administrators_ownership(tmp_path, windows_acl, monkeypatch) -> None:
+    target = tmp_path / "empty.tmp"
+    target.touch()
+    read_acl = private_files._read_windows_acl
+
+    def administrators_owned(path: Path) -> tuple[str, str]:
+        return "S-1-5-32-544", read_acl(path)[1]
+
+    monkeypatch.setattr(private_files, "_read_windows_acl", administrators_owned)
+    monkeypatch.setattr(private_files, "_token_owner_sid", lambda: "S-1-5-32-544")
+    private_files.secure_file(target)
+
+
+def test_windows_rejects_foreign_owner_without_token_owner_support(tmp_path, windows_acl, monkeypatch) -> None:
+    target = tmp_path / "empty.tmp"
+    target.touch()
+    read_acl = private_files._read_windows_acl
+
+    def administrators_owned(path: Path) -> tuple[str, str]:
+        return "S-1-5-32-544", read_acl(path)[1]
+
+    monkeypatch.setattr(private_files, "_read_windows_acl", administrators_owned)
+    monkeypatch.setattr(private_files, "_token_owner_sid", lambda: None)
+    with pytest.raises(private_files.PrivateFilePermissionError, match="not the current account"):
         private_files.secure_file(target)
 
 

@@ -103,9 +103,83 @@ def _windows_api():
     security.ConvertSecurityDescriptorToStringSecurityDescriptorW.restype = wintypes.BOOL
     security.ConvertSidToStringSidW.argtypes = [pointer, ctypes.POINTER(wintypes.LPWSTR)]
     security.ConvertSidToStringSidW.restype = wintypes.BOOL
+    security.ConvertStringSidToSidW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(wintypes.LPWSTR)]
+    security.ConvertStringSidToSidW.restype = wintypes.BOOL
+    security.OpenProcessToken.argtypes = [pointer, wintypes.DWORD, pointer_to_pointer]
+    security.OpenProcessToken.restype = wintypes.BOOL
+    security.GetTokenInformation.argtypes = [pointer, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD,
+                                             ctypes.POINTER(wintypes.DWORD)]
+    security.GetTokenInformation.restype = wintypes.BOOL
+    kernel.GetCurrentProcess.restype = pointer
     kernel.LocalFree.argtypes = [pointer]
     kernel.LocalFree.restype = pointer
     return security, kernel
+
+
+def _token_owner_sid() -> str | None:
+    """Default owner SID of the process token, or None when it cannot be established.
+
+    With UAC disabled (GitHub-hosted Windows runners) a member of Administrators runs
+    with a full token whose default owner is the Administrators group, and objects the
+    job creates are owned by that group. The DACL still gates content access, so
+    ownership by the token's own default owner is not an escape of privacy.
+    """
+    if not _is_windows():
+        return None
+    try:
+        security, kernel = _windows_api()
+    except PrivateFilePermissionError:
+        return None
+    token = ctypes.c_void_p()
+    if not security.OpenProcessToken(kernel.GetCurrentProcess(), 0x8, ctypes.byref(token)):
+        return None
+    try:
+        length = wintypes.DWORD(0)
+        # The zero-length probe is expected to fail; it only fills in the required length.
+        security.GetTokenInformation(token, 4, None, 0, ctypes.byref(length))  # TokenOwner
+        if not length.value:
+            return None
+        raw = ctypes.create_string_buffer(length.value)
+        if not security.GetTokenInformation(token, 4, raw, length.value, ctypes.byref(length)):
+            return None
+        owner_pointer = ctypes.c_void_p.from_buffer_copy(raw)
+        text = wintypes.LPWSTR()
+        if security.ConvertSidToStringSidW(owner_pointer, ctypes.byref(text)) and text.value:
+            result = text.value
+            kernel.LocalFree(ctypes.cast(text, ctypes.c_void_p))
+            return result
+        return None
+    finally:
+        kernel.LocalFree(token)
+
+
+def _sid_text(token: str) -> str:
+    """Resolve an SDDL SID abbreviation ('LA', 'BA', 'SY', ...) to a canonical SID string.
+
+    Windows renders well-known SIDs symbolically in SDDL, so a DACL written with numeric
+    SIDs can read back abbreviated. Unresolvable tokens are returned unchanged, which
+    fails closed: they never match the expected identity set.
+    """
+    fallback = {"SY": _SYSTEM_SID}.get(token, token)
+    if not _is_windows():
+        return fallback
+    try:
+        security, kernel = _windows_api()
+    except PrivateFilePermissionError:
+        return fallback
+    resolved = wintypes.LPWSTR()
+    try:
+        if not security.ConvertStringSidToSidW(token, ctypes.byref(resolved)) or not resolved.value:
+            return fallback
+        text = wintypes.LPWSTR()
+        if security.ConvertSidToStringSidW(resolved, ctypes.byref(text)) and text.value:
+            result = text.value
+            kernel.LocalFree(ctypes.cast(text, ctypes.c_void_p))
+            return result
+        return fallback
+    finally:
+        if resolved.value:
+            kernel.LocalFree(resolved)
 
 
 def _set_windows_acl(path: Path, descriptor_text: str) -> None:
@@ -165,8 +239,8 @@ def _private_dacl(dacl: str, owner_sid: str, *, directory: bool) -> bool:
             return False
         if parts[1] != ("OICI" if directory else ""):
             return False
-        identities.add(_SYSTEM_SID if parts[5] == "SY" else parts[5])
-    return identities == {owner_sid, _SYSTEM_SID}
+        identities.add(_sid_text(parts[5]))
+    return identities == {_sid_text(owner_sid), _SYSTEM_SID}
 
 
 def _windows_permissions(path: Path, *, directory: bool) -> None:
@@ -177,8 +251,12 @@ def _windows_permissions(path: Path, *, directory: bool) -> None:
         dacl += f"(A;{flags};FA;;;SY)"
     _set_windows_acl(path, f"O:{owner_sid}{dacl}")
     actual_owner, actual_dacl = _read_windows_acl(path)
-    if actual_owner != owner_sid or not _private_dacl(actual_dacl, owner_sid, directory=directory):
-        raise PrivateFilePermissionError("Private storage ACL remains accessible to an unexpected account")
+    if actual_owner != owner_sid and actual_owner != _token_owner_sid():
+        raise PrivateFilePermissionError(
+            f"Private storage owner is not the current account (readback {actual_owner})")
+    if not _private_dacl(actual_dacl, owner_sid, directory=directory):
+        raise PrivateFilePermissionError(
+            f"Private storage ACL remains accessible to an unexpected account (dacl {actual_dacl})")
 
 
 def secure_directory(path: Path) -> None:
