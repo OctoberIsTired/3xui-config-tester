@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="360" viewBox="0 0 1200 360" role="img" aria-labelledby="title description">
+  <title id="title">3xui-config-tester</title>
+  <desc id="description">Controlled Xray inbound experiments, from a temporary clone to measurable results.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0a1626"/>
+      <stop offset="0.58" stop-color="#102c42"/>
+      <stop offset="1" stop-color="#0a1726"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#45d5e9"/>
+      <stop offset="1" stop-color="#56d89c"/>
+    </linearGradient>
+    <pattern id="grid" width="38" height="38" patternUnits="userSpaceOnUse">
+      <path d="M38 0H0V38" fill="none" stroke="#79b4cc" stroke-opacity=".09"/>
+    </pattern>
+  </defs>
+  <rect width="1200" height="360" rx="24" fill="url(#background)"/>
+  <rect width="1200" height="360" rx="24" fill="url(#grid)"/>
+  <circle cx="1078" cy="46" r="165" fill="#2d7690" opacity=".13"/>
+  <circle cx="711" cy="360" r="168" fill="#32ab91" opacity=".08"/>
+  <g transform="translate(58 66)">
+    <rect width="64" height="64" rx="16" fill="#14374c" stroke="#52d7d0" stroke-opacity=".65"/>
+    <path d="M13 34h9l5-12 9 25 7-14h10" fill="none" stroke="url(#accent)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="84" y="42" fill="#f4fafc" font-family="Segoe UI, Inter, Arial, sans-serif" font-size="52" font-weight="750" letter-spacing="-2">3xui-config-tester</text>
+    <text x="2" y="112" fill="#a9c8d6" font-family="Segoe UI, Inter, Arial, sans-serif" font-size="23">Explore configurations. Measure the result. Restore the state.</text>
+    <g font-family="Segoe UI, Inter, Arial, sans-serif" font-size="16" font-weight="600">
+      <rect y="145" width="112" height="34" rx="17" fill="#174359"/>
+      <text x="19" y="167" fill="#8ce2e6">PAIRWISE</text>
+      <rect x="125" y="145" width="110" height="34" rx="17" fill="#174359"/>
+      <text x="145" y="167" fill="#8ce2e6">MUTATION</text>
+      <rect x="248" y="145" width="126" height="34" rx="17" fill="#174359"/>
+      <text x="266" y="167" fill="#8ce2e6">EXHAUSTIVE</text>
+    </g>
+  </g>
+  <g transform="translate(715 90)" font-family="Segoe UI, Inter, Arial, sans-serif">
+    <path d="M66 92H158M252 92h93" fill="none" stroke="#58d5c9" stroke-width="3" stroke-dasharray="6 7"/>
+    <circle cx="66" cy="92" r="8" fill="#56d89c"/>
+    <circle cx="252" cy="92" r="8" fill="#56d89c"/>
+    <circle cx="345" cy="92" r="8" fill="#56d89c"/>
+    <rect width="132" height="182" rx="16" fill="#122d42" stroke="#3c6d7e"/>
+    <text x="66" y="41" text-anchor="middle" fill="#d3e9ef" font-size="15" font-weight="700">SOURCE</text>
+    <rect x="26" y="60" width="80" height="64" rx="9" fill="#1d5065"/>
+    <path d="M43 83h47M43 96h33" stroke="#8bdddf" stroke-width="4" stroke-linecap="round"/>
+    <text x="66" y="153" text-anchor="middle" fill="#8fb7c5" font-size="14">3x-ui inbound</text>
+    <rect x="158" y="0" width="188" height="182" rx="16" fill="#144052" stroke="#54c9bd" stroke-width="2"/>
+    <text x="252" y="41" text-anchor="middle" fill="#d5fbf1" font-size="15" font-weight="700">TEMPORARY CLONE</text>
+    <circle cx="252" cy="92" r="35" fill="#1c6571"/>
+    <path d="M234 93l12 12 26-28" fill="none" stroke="#78e5c0" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="252" y="153" text-anchor="middle" fill="#a8d6d8" font-size="14">run + cleanup</text>
+    <rect x="371" y="18" width="91" height="146" rx="12" fill="#122d42" stroke="#3c6d7e"/>
+    <text x="416" y="47" text-anchor="middle" fill="#d3e9ef" font-size="14" font-weight="700">RESULT</text>
+    <path d="M393 120V97M415 120V72M437 120V84" stroke="url(#accent)" stroke-width="12" stroke-linecap="round"/>
+    <text x="416" y="145" text-anchor="middle" fill="#8fb7c5" font-size="13">JSON · CSV · XLSX</text>
+  </g>
+  <path d="M24 343h1152" stroke="#65d7cb" stroke-opacity=".4" stroke-width="2"/>
+</svg>

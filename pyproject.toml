@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "3xui-config-tester"
+version = "0.1.0"
+description = "Safe, resumable experiment runner for 3x-ui/Xray inbounds"
+requires-python = ">=3.12"
+dependencies = [
+  "httpx[socks]>=0.27",
+  "openpyxl>=3.1",
+  "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "respx>=0.21"]
+
+[project.scripts]
+3xui-config-tester = "app.web:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]

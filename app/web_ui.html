@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>3xui-config-tester — конструктор эксперимента</title>
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/api.js" defer></script>
+<script src="/static/draft.js" defer></script>
+<script src="/static/render.js" defer></script>
+</head>
+<body>
+<main>
+<h1>3xui-config-tester <span class="tag">конструктор эксперимента</span></h1>
+<p class="sub">Локальный конструктор тестовых конфигураций. Значения параметров выбираются множественно; токен панели в браузер не передаётся.</p>
+<nav class="tabs" aria-label="Разделы">
+<button class="tab active" data-tab="connection" onclick="setTab('connection')">1. Окружение</button>
+<button class="tab" data-tab="parameters" onclick="setTab('parameters')">2. Параметры поиска</button>
+<button class="tab" data-tab="plan" onclick="setTab('plan')">3. План поиска</button>
+<button class="tab" data-tab="run" onclick="setTab('run')">4. Результаты</button>
+</nav>
+
+<section class="panel tab-panel" data-tab-panel="connection">
+<h2>Подключение и временный inbound</h2>
+<p class="hint">Укажите адрес панели, исходный inbound и путь к Xray на этой машине. Токен панели хранится в локальном YAML конфиге backend или задаётся переменной окружения <code>PANEL_API_TOKEN</code> перед запуском Web UI. В браузер он не передаётся.</p>
+<div class="grid">
+<label>Адрес панели 3x-ui<input id="panelUrl" type="url" placeholder="https://panel.example.com"></label>
+<label>Исходное входящее подключение<input id="sourceId" type="number" min="1" list="inboundIds" placeholder="Загрузите список или введите ID"><datalist id="inboundIds"></datalist></label>
+<label>Порт тестовой копии<input id="testPort" type="number" min="1" max="65535" placeholder="Авто из портов ниже"></label>
+<label>Порты тестовой копии<input id="clonePorts" placeholder="24443, 24500 или 20000-21000"></label>
+<label>Маршрут тестовой копии<select id="topology"><option value="direct">Прямое подключение к порту копии</option><option value="reverse_proxy">Через подготовленный reverse proxy</option></select></label>
+<label>IP-адрес / имя сервера<input id="serverAddress" placeholder="vpn.example.com"></label>
+<label>Путь к локальному Xray<input id="xrayBinary" placeholder="xray или путь к xray.exe"></label>
+<label>Проверка конфигурации локальным Xray<select id="validateConfig"><option value="true">Обязательная (рекомендуется)</option><option value="false">Отключена</option></select></label>
+<label>Проверять TLS сертификат панели<select id="verifyTls"><option value="true">Да</option><option value="false">Нет</option></select></label>
+<label>Использовать системный proxy для панели<select id="trustEnv"><option value="false">Нет</option><option value="true">Да</option></select></label>
+<label>Имя TLS-сервера (SNI)<input id="tlsSni"></label>
+<label>Имя для проверки сертификата Xray<input id="verifyPeerName"></label>
+<label>REALITY target<input id="realityTarget" placeholder="example.com:443"></label>
+<label>REALITY serverNames (через запятую)<input id="realityServerNames" placeholder="example.com"></label>
+<label>Каталог результатов<input id="outputDir"></label>
+</div>
+<div class="toolbar">
+<label>Файл целей REALITY (.yaml)<input id="realityFile" type="file" accept=".yaml,.yml,.json" onchange="loadRealityFile(this)"></label>
+<button type="button" onclick="useBuiltinReality()">Использовать встроенный список</button>
+<button type="button" onclick="clearRealityCandidates()">Очистить список</button>
+<span id="realityFileStatus" class="count"></span>
+</div>
+<p class="hint">Порт тестовой копии должен быть доступен с машины, где запускается тестер. Если поле «Порт тестовой копии» пустое, берётся первый свободный порт из списка ниже: перечислите через запятую только те порты, что открыты в firewall сервера, либо задайте интервал «20000-21000». Фиксированный порт имеет приоритет над списком. Для KCP нужен UDP. Обязательная проверка запускает локальный <code>xray run -test</code> до изменения inbound; без доступного ядра прогон остановится. Отключайте её только если готовы запускать конфиги без проверки ядром. Проверка сертификата панели и TLS настройки тестового inbound независимы.</p>
+<label>URL для проверки (по одному на строку)<textarea id="urls"></textarea></label>
+<div class="actions">
+<button class="secondary" data-action="load-inbounds" onclick="loadInbounds()">↻ Загрузить inbound из панели</button>
+<button class="secondary" data-action="save-connection">Сохранить конфигурацию YAML</button>
+</div>
+<div id="connectionStatus" class="notice" role="status"></div>
+<p id="routeStatus" class="hint">Перед запуском сохраните окружение и проверьте доступность панели.</p>
+<p class="hint">Используется один тестовый inbound и последовательные проверки. Для прямого маршрута PROXY protocol отключается только у копии. Прямой маршрут до тестового сервера проверяется перед запуском, когда включена проверка прямого маршрута в конфиге. Таблицу маршрутизации Web UI не изменяет.</p>
+<div id="inboundResult" class="inbounds"></div>
+</section>
+
+<section class="panel tab-panel" data-tab-panel="parameters">
+<h2>Что тестировать</h2>
+<p class="hint">Каталог загружается backend-ом из схем Xray/3x-ui и дополняется текущими значениями inbound через API панели. Кнопка «Копия inbound» создаёт точный фиксированный baseline; после этого переключите нужные параметры в «Мутировать».</p>
+<div id="registryMeta" class="notice">Загрузка реестра…</div>
+<div class="toolbar">
+<input id="parameterSearch" placeholder="Поиск: XHTTP, TLS, mux…" oninput="renderPresets()">
+<label class="inline-filter"><input id="showInactive" type="checkbox" onchange="renderPresets();renderCards()"> Показать неактивные параметры</label>
+<button type="button" onclick="selectInboundCopy()">Копия inbound</button>
+<button type="button" onclick="setMutationMode(Object.keys(presets),true)">Мутировать всё</button>
+<button type="button" onclick="setMutationMode(Object.keys(presets),false)">Фиксировать всё</button>
+<button type="button" onclick="selectParameters(Object.keys(presets),false)">Снять всё</button>
+<button type="button" onclick="reloadRegistry()">↻ Обновить список</button>
+<span id="parameterCount" class="count"></span>
+</div>
+<div id="presetList" class="presets"></div>
+</section>
+
+<section class="panel tab-panel" data-tab-panel="parameters">
+<h2>Допустимые значения</h2>
+<div class="actions">
+<button class="secondary" onclick="setSelectedValues('all')">Все значения выбранных</button>
+<button class="secondary" onclick="setSelectedValues('current')">Только текущие значения</button>
+</div>
+<div id="parameterCards"><p class="hint">Выберите характеристики выше.</p></div>
+<div class="actions">
+<button type="button" onclick="addCustom()">＋ Свой параметр / путь Xray</button>
+</div>
+</section>
+
+<section class="panel tab-panel" data-tab-panel="plan">
+<h2>План и метрики</h2>
+<p class="hint">Быстрая HTTPS-проверка отбирает кандидатов; подтверждение повторяет их в новых клиентских сессиях. Скорость измеряется у финалистов. Успех одного запроса ещё не означает стабильное подключение.</p>
+<div class="actions primary-actions">
+<button data-action="preview">Рассчитать план</button>
+<button class="secondary" data-action="save">Сохранить YAML</button>
+<button data-action="start-run">▶ Начать поиск</button>
+<button class="danger" data-action="stop-run">■ Остановить</button>
+</div>
+<div class="grid">
+<label class="plan-field"><span>Стратегия поиска</span><select id="combinationStrategy" onchange="showStrategySettings()"><option value="adaptive">Адаптивный поиск с подтверждением</option><option value="mutation">Мутации</option><option value="pairwise">Попарное покрытие</option><option value="exhaustive">Полный перебор</option></select><small class="field-help">Адаптивный поиск исследует независимые сочетания, даже когда исходное подключение не работает.</small></label>
+<label class="plan-field"><span>Цель</span><select id="searchGoal"><option value="first_confirmed">Первое подтверждённое подключение</option><option value="compare">Сравнить подтверждённые варианты</option><option value="research">Исследовать покрытие</option></select></label>
+<label class="plan-field"><span>Максимум конфигураций</span><input id="maxCombinations" type="number" min="1" value="120"><small class="field-help">Предел разных кандидатов. На сервере применяется один вариант за раз.</small></label>
+</div>
+<div class="grid adaptive-settings">
+<label class="plan-field"><span>Время поиска, мин</span><input id="timeBudget" type="number" min="0.1" step="0.1" value="10"></label>
+<label class="plan-field"><span>Бюджет HTTP-запросов</span><input id="requestBudget" type="number" min="1" value="600"></label>
+<label class="plan-field"><span>Бюджет трафика, МБ</span><input id="trafficBudget" type="number" min="1" value="30"></label>
+<label class="plan-field"><span>Применений к панели</span><input id="applyBudget" type="number" min="1" value="250"></label>
+<label class="plan-field"><span>Независимое исследование, %</span><input id="explorationFraction" type="number" min="0" max="100" value="25"><small class="field-help">Часть поиска новых профилей и сочетаний сохраняется независимо от успеха родителей.</small></label>
+<label class="plan-field"><span>Окон подтверждения</span><input id="confirmationWindows" type="number" min="1" value="3"></label>
+<label class="plan-field"><span>Запросов в каждом окне</span><input id="confirmationRequests" type="number" min="1" value="5"></label>
+<label class="plan-field"><span>Пауза между окнами, с</span><input id="confirmationDelay" type="number" min="0" step="0.5" value="2"><small class="field-help">Каждое окно использует новую сессию Xray. Число успешных окон описывает наблюдения, а не статистическую гарантию.</small></label>
+<label class="plan-field"><span>Seed воспроизводимого поиска</span><input id="searchSeed" type="number" min="0" value="0"></label>
+</div>
+<details class="advanced-settings"><summary>Дополнительные измерения и прежние стратегии</summary><div class="grid">
+<label class="plan-field"><span>Поколений мутаций</span><input id="mutationGenerations" type="number" min="1" max="10" value="2"><small class="field-help">Количество волн поиска. Первое поколение пробует исходные варианты, последующие развивают только успешные конфигурации.</small></label>
+<label class="plan-field"><span>Ширина отбора</span><input id="beamWidth" type="number" min="1" value="8"><small class="field-help">Сколько лучших конфигураций остаётся в каждом поколении мутаций. Большее значение расширяет поиск и увеличивает время.</small></label>
+<label class="plan-field"><span>Потомков на конфигурацию</span><input id="childrenPerParent" type="number" min="1" value="8"><small class="field-help">Сколько новых вариантов создаётся из каждого выбранного родителя при поиске мутаций.</small></label>
+<label class="plan-field"><span>Повторов на конфигурацию</span><input id="runsPerCombination" type="number" min="1" value="5"><small class="field-help">Сколько раз измеряется один вариант. Пять повторов позволяют оценить среднее и разброс p95 и скорости.</small></label>
+<label class="plan-field"><span>Неудач до остановки</span><input id="maxFailedRuns" type="number" min="1" value="1"><small class="field-help">После такого числа неудачных повторов проверка этой конфигурации прекращается, чтобы не тратить время на заведомо нерабочий вариант.</small></label>
+<label class="plan-field"><span>Тайм-аут HTTP-запроса, с</span><input id="requestTimeout" type="number" min="1" step="0.5" value="5"><small class="field-help">Максимальное время одного HTTP-запроса при проверке доступности и задержки.</small></label>
+<label class="plan-field"><span>Тайм-аут TCP-подключения, с</span><input id="tcpConnectTimeout" type="number" min="1" step="0.5" value="3"><small class="field-help">Сколько ждать установки TCP-соединения. Короткий срок быстрее отсеивает недоступные конфигурации.</small></label>
+<label class="plan-field"><span>Общий тайм-аут скрининга, с</span><input id="screeningTimeout" type="number" min="1" step="0.5" value="8"><small class="field-help">Максимальное время быстрого предварительного теста, включая соединение и HTTP-проверку.</small></label>
+<label class="plan-field"><span>Запросов при скрининге</span><input id="screeningRequests" type="number" min="1" value="1"><small class="field-help">Число быстрых запросов до подробных измерений. Используется, чтобы отсеять неработающие варианты.</small></label>
+<label class="plan-field"><span>Минимальная доля успешных запросов, %</span><input id="minSuccessRate" type="number" min="0" max="100" value="100"><small class="field-help">Порог допуска: конфигурация проходит дальше только при указанной доле успешных запросов.</small></label>
+<label class="plan-field"><span>Максимальный p95 задержки, мс</span><input id="maxLatencyP95" type="number" min="0" value="0"><small class="field-help">Порог качества задержки. Значение 0 отключает ограничение; большее значение p95 означает более медленную реакцию.</small></label>
+<label class="plan-field"><span>Требовать TCP-подключение</span><select id="requireTcpConnect"><option value="true">Да</option><option value="false">Нет</option></select><small class="field-help">Если включено, конфигурация не пройдёт проверку без успешного TCP-соединения с тестовым сервером.</small></label>
+<label class="plan-field"><span>HTTP-запросов для задержки</span><input id="latencyRequests" type="number" min="1" value="3"><small class="field-help">Количество HTTP-измерений, из которых вычисляются средняя задержка и p95.</small></label>
+<label class="plan-field"><span>Запросов для стабильности</span><input id="stabilityRequests" type="number" min="1" value="5"><small class="field-help">Количество дополнительных HTTP-запросов для оценки устойчивости соединения и разброса отклика.</small></label>
+<label class="plan-field"><span>Проверка ICMP ping</span><select id="pingEnabled"><option value="true">Включена</option><option value="false">Выключена</option></select><small class="field-help">Включает измерение сетевого ping до тестового сервера. На некоторых сетях ICMP может быть закрыт — это не заменяет HTTP-проверку.</small></label>
+<label class="plan-field"><span>Количество ICMP ping</span><input id="pingRequests" type="number" min="1" value="4"><small class="field-help">Сколько ICMP-пакетов отправлять при включённой проверке ping.</small></label>
+<label class="plan-field"><span>Замер скорости загрузки</span><select id="speedEnabled"><option value="true">Включён</option><option value="false">Выключен</option></select><small class="field-help">Включает загрузку тестового файла через проверяемую конфигурацию. По умолчанию включён.</small></label>
+<label class="plan-field"><span>Лимит загрузки, МБ</span><input id="speedMegabytes" type="number" min="1" value="5"><small class="field-help">Сколько первых мегабайт файла использовать для расчёта скорости. Значение 5 ограничивает расход трафика на каждый повтор.</small></label>
+<label class="plan-field"><span>Адрес файла для замера скорости</span><input id="speedUrl" type="url" value="https://mirror.nforce.com/pub/speedtests/25mb.bin"><small class="field-help">Источник тестовой загрузки. Используется файл 25 МБ; фактически скачивается объём, заданный лимитом выше.</small></label>
+</div></details>
+<p class="hint">План рассчитывается локально. Ограниченное покрытие отображается явно. Отказы конечного сайта и недоступность панели учитываются отдельно от кандидата.</p>
+<div id="planNotice" class="notice" role="status"></div>
+<div id="result" class="plan-output"><p class="hint">Нажмите «Рассчитать план», чтобы увидеть число запусков и первые конфигурации.</p></div>
+</section>
+
+<section class="panel tab-panel" data-tab-panel="run">
+<h2>Запуск проверки</h2>
+<p class="hint">Проверка создаёт временную копию входящего подключения на порту, указанном в разделе «Подключение». Рабочее подключение не изменяется; копия удаляется после завершения или остановки.</p>
+<div class="actions">
+<button data-action="start-run">▶ Запустить проверку</button>
+<button class="danger" data-action="stop-run">■ Остановить</button>
+<button class="secondary" data-action="poll-run">↻ Статус</button>
+</div>
+<progress id="runProgress" max="1" value="0"></progress>
+<div id="runNotice" class="notice" role="status"></div>
+<div id="runDashboard" class="run-dashboard" aria-live="polite"></div>
+<div id="runResult" class="status-card">Проверка ещё не запускалась.</div>
+</section>
+
+<section class="panel tab-panel" data-tab-panel="run">
+<div class="history-head">
+<div>
+<h2>История запусков</h2>
+<p class="hint">Отчёты остаются в отдельных папках и доступны после обновления страницы.</p>
+</div>
+<button class="secondary history-refresh" type="button" onclick="refreshRuns()">↻ Обновить</button>
+</div>
+<div id="runHistory" class="history-list" aria-live="polite"><p class="hint">История загружается…</p></div>
+</section>
+</main>
+</body>
+</html>

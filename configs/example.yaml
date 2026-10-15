@@ -1,0 +1,147 @@
+# API token is preferable to a password. Export PANEL_API_TOKEN before starting.
+panel:
+  url: "https://panel.example.com"
+  api_token: "${PANEL_API_TOKEN}"
+  verify_tls: true
+  # Direct access is the default; set true only if this panel requires a system proxy.
+  # trust_env: true
+
+inbound:
+  mode: clone
+  source_id: 1
+  topology: direct  # direct clone disables inherited acceptProxyProtocol; source is unchanged
+  test_port: 9443
+
+testing:
+  # Public address where Xray clients reach the clone; do not use a panel URL path here.
+  server_address: "vpn.example.com"
+  xray_binary: "/usr/local/x-ui/bin/xray-linux-amd64"
+  # По умолчанию `true`: проверка обязательна. Локальный Xray запускает
+  # `xray run -test` до изменения inbound; отсутствие ядра, timeout или
+  # ошибка запуска останавливают прогон. false явно отключает проверку.
+  validate_config: true
+  # Порт клона: фиксированный inbound.test_port или первый свободный из
+  # testing.ports. В Web UI поле «Порты тестовой копии» принимает список через
+  # запятую («24443, 24500») — перечисляйте только открытые в firewall порты
+  # сервера. Интервал «20000-21000» пишется в прежний testing.port_range.
+  ports: [9443]  # list only ports actually opened on the server; one sequential writer
+  # Legacy repeats describe observed samples, not a reliability confidence guarantee.
+  runs_per_combination: 5
+  # Stop a candidate after this many failed attempts; 1 avoids repeating a broken connection.
+  max_failed_runs: 1
+  config_apply_delay: 3
+  test_delay: 1
+  # To test REALITY when the source inbound uses TLS, set both fields below.
+  # The target is a server-side TLS destination (hostname:port); server_names
+  # contains SNI names whose certificate matches that destination.
+  # Alternatively use the shipped list; paths are relative to this YAML file.
+  # The panel checks each pair before the test, and only feasible pairs enter the plan.
+  # reality:
+  #   candidates_file: reality-targets.yaml
+  # reality:
+  #   target: "www.example.com:443"
+  #   server_names: ["www.example.com"]
+  combination_strategy: pairwise
+  # Opt in with combination_strategy: adaptive. Existing strategies retain their
+  # repeat semantics; adaptive budgets and confirmation windows are independent.
+  adaptive:
+    goal: first_confirmed  # first_confirmed | compare | research
+    seed: 0
+    time_budget_seconds: 600
+    request_budget: 600
+    traffic_budget_bytes: 30000000
+    apply_budget: 250
+    exploration_fraction: 0.25
+    comparison_requests: 4
+    confirmation_windows: 3
+    confirmation_requests: 5
+    window_delay_seconds: 2
+    screening_retries: 1
+    negative_resample_fraction: 0.1
+    speed_finalists: 2
+    control_interval: 10
+  # With an active VPN, add a physical host route before enabling this guard.
+  require_direct_route: false
+  # For mutation: generation 1 explores around the baseline even if it fails.
+  # Later generations expand only the best successful parents.
+  mutation_generations: 2
+  beam_width: 8
+  children_per_parent: 8
+  max_combinations: 50
+  # A short timeout or max_failed_runs: 1 may reject a transiently slow candidate.
+  screening: {enabled: true, requests: 1, min_success_rate: 1.0, require_tcp_connect: true}
+  quality_gates: {min_success_rate: 1.0, min_successful_requests: 1, max_latency_p95_ms: 0, require_tcp_connect: true}
+  urls: ["https://example.com", "https://www.gstatic.com/generate_204"]
+  confirmation_urls: ["https://www.gstatic.com/generate_204", "https://www.cloudflare.com/cdn-cgi/trace"]
+  http: {max_response_bytes: 65536}
+  latency: {requests: 10}
+  stability: {requests: 20}
+  ping: {enabled: true, requests: 4, timeout: 2}
+  # По умолчанию замеряет первые 5 МБ с общедоступного тестового файла на 25 МБ.
+  speed_test: {enabled: true, url: "https://mirror.nforce.com/pub/speedtests/25mb.bin", max_bytes: 5000000, max_duration_seconds: 10}
+
+timeouts:
+  api: 10
+  xray_start: 15
+  # Ограничивает одну проверку `xray run -test` для клиентского конфига.
+  xray_config_test: 15
+  # A failed candidate must be rejected quickly, not spend 20 seconds per request.
+  request: 5
+  tcp_connect: 3
+  screening: 10
+  cleanup: 30
+
+parameters:
+  network:
+    type: enum
+    values: [tcp, kcp, ws, grpc, httpupgrade, xhttp]
+    # false keeps the live baseline fixed; true lets successful branches mutate it.
+    mutate: true
+    path: [streamSettings, network]
+  security:
+    type: enum
+    values: [none, tls, reality]
+    path: [streamSettings, security]
+    value_conditions:
+      - value: tls
+        conditions:
+          any:
+            - {parameter: network, exists: false}
+            - {parameter: network, in: [tcp, kcp, ws, grpc, httpupgrade, xhttp]}
+      - value: reality
+        conditions:
+          any:
+            - {parameter: network, exists: false}
+            - {parameter: network, in: [tcp, grpc, xhttp]}
+  tls_fingerprint:
+    type: enum
+    values: [chrome, firefox, safari, random, randomized]
+    target: client
+    path: [outbounds, 0, streamSettings, tlsSettings, fingerprint]
+    conditions:
+      security: {equals: tls}
+  reality_fingerprint:
+    type: enum
+    values: [chrome, firefox, safari, random, randomized]
+    target: client
+    path: [outbounds, 0, streamSettings, realitySettings, fingerprint]
+    conditions:
+      security: {equals: reality}
+  mux:
+    type: boolean
+    values: [true, false]
+    target: client
+    path: [outbounds, 0, mux, enabled]
+  mux_concurrency:
+    type: integer
+    min: 1
+    max: 8
+    step: 1
+    target: client
+    path: [outbounds, 0, mux, concurrency]
+    conditions:
+      mux: {equals: true}
+
+output:
+  directory: "./results"
+  formats: [csv, json, xlsx]
