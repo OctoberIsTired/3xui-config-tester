@@ -44,12 +44,61 @@ flowchart LR
     B -. cleanup .-> G[Clone removed]
 ```
 
+## Compatibility audit — 16 October 2026
+
+> [!IMPORTANT]
+> These results apply only to the audited scenario and profiles. They are not a
+> promise that every configuration supported by an Xray-core or 3x-ui release
+> will work. A test that did not produce its expected HTTP marker is reported as
+> unsuccessful, even when configuration validation and cleanup succeeded.
+
+The audit separates standalone core support, panel behavior, and exact live
+core/panel pairings; evidence from one level must not be treated as proof for
+another.
+
+### Xray-core standalone
+
+| Verdict | Versions |
+| --- | --- |
+| `SUPPORTED_WITH_LIMITATIONS` | v1.7.0, v1.8.6, v1.8.24, v24.12.31 |
+| `SUPPORTED` | v25.12.8, v26.3.27, v26.9.9, v26.10.10 |
+
+### 3x-ui panel
+
+| Versions | Evidence and verdict |
+| --- | --- |
+| v3.0.2, v3.1.0 | `INCOMPATIBLE_API` |
+| v3.2.8 | `INCOMPATIBLE_E2E` |
+| v3.8.0, v3.10.2 | Passed a separate standalone panel-marker end-to-end test. |
+| v3.3.1–v3.7.0, v3.8.5, v3.9.0 | Passed API/lifecycle checks only. The panel-marker E2E test was not run, so these versions do **not** have confirmed full compatibility. |
+
+### Exact cross-live replay
+
+All six selected pairs received `INCOMPATIBLE_E2E`:
+
+- v3.2.8 × v1.7.0
+- v3.2.8 × v26.3.27
+- v3.10.2 × v1.7.0
+- v3.10.2 × v26.3.27
+- v3.8.0 × v26.9.9
+- v3.10.2 × v26.10.10
+
+For every pair, `xray run -test` succeeded, the source inbound remained
+unchanged, and cleanup/teardown succeeded, but the expected HTTP marker was not
+received. These are failed end-to-end results, not `UNVERIFIED` results.
+
+Detailed evidence is kept outside the tracked repository in the local,
+Git-ignored `audit/2026-10-16/` workspace (`COMPATIBILITY.md` and `REVIEW.md`).
+Those files are intentionally not linked here because they are absent from an
+ordinary clone.
+
 ## Quick start
 
 You need Git, Python 3.12+, [uv](https://docs.astral.sh/uv/), a local Xray
 binary, access to the 3x-ui API, and a route from the test machine to the
-temporary inbound. The adapter has been tested with 3x-ui v3.8.0 and Xray v26.9.9;
-each run also checks the live panel's OpenAPI before changing an inbound.
+temporary inbound. See the compatibility audit above for version-specific
+evidence; each run also checks the live panel's OpenAPI before changing an
+inbound.
 
 ```bash
 git clone https://github.com/OctoberIsTired/3xui-config-tester.git
