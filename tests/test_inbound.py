@@ -1,6 +1,7 @@
 import asyncio
 import copy
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -168,6 +169,76 @@ def test_clone_cleanup_accepts_delete_that_succeeded_before_timeout() -> None:
     asyncio.run(manager.cleanup())
     assert panel.deleted == [9]
     assert manager.test_inbound_id is None
+
+
+class ClientStorePanel(FakePanel):
+    """FakePanel плюс глобальное хранилище клиентов панели (3x-ui v3.8+)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.client_records: list[dict] = []
+        self.deleted_clients: list[list[str]] = []
+
+    async def list_clients(self) -> list[dict]:
+        return [record.copy() for record in self.client_records]
+
+    async def delete_clients(self, emails: list[str]) -> dict:
+        self.deleted_clients.append(list(emails))
+        return {"deleted": len(emails), "skipped": []}
+
+
+def _prepare_clone_with_clients(panel: ClientStorePanel, client_count: int = 2,
+                                recovery_dir: Path | None = None) -> tuple[InboundManager, list[str]]:
+    settings = {"clients": [{"id": f"fake-uuid-{index}", "email": "shared@example.test"}
+                            for index in range(client_count)]}
+    panel.items[4]["settings"] = json.dumps(settings)
+    manager = InboundManager(panel, "clone", 4, test_port=9443, recovery_dir=recovery_dir)
+    asyncio.run(manager.prepare())
+    created = json.loads(panel.items[9]["settings"])
+    return manager, [item["email"] for item in created["clients"]]
+
+
+def test_clone_cleanup_deletes_only_its_own_client_records() -> None:
+    panel = ClientStorePanel()
+    manager, clone_emails = _prepare_clone_with_clients(panel)
+    panel.client_records = [{"email": email} for email in clone_emails]
+    panel.client_records += [{"email": "my"},
+                             {"email": "3xui-tester-ffffffffffffffffffffffffffffffff-0@example.invalid"}]
+
+    asyncio.run(manager.cleanup())
+
+    assert panel.deleted == [9]
+    assert len(panel.deleted_clients) == 1
+    assert sorted(panel.deleted_clients[0]) == sorted(clone_emails)
+
+
+def test_clone_cleanup_tolerates_client_store_errors() -> None:
+    class BrokenClientStore(ClientStorePanel):
+        async def list_clients(self) -> list[dict]:
+            raise TimeoutError("clients endpoint unavailable")
+
+    panel = BrokenClientStore()
+    manager, _emails = _prepare_clone_with_clients(panel, client_count=1)
+    asyncio.run(manager.cleanup())
+    assert panel.deleted == [9]
+    assert panel.deleted_clients == []
+    assert not manager.cleanup_pending
+    assert manager.test_inbound_id is None
+
+
+def test_recovery_cleanup_still_deletes_orphaned_client_records(tmp_path) -> None:
+    panel = ClientStorePanel()
+    _manager, clone_emails = _prepare_clone_with_clients(panel, client_count=1, recovery_dir=tmp_path)
+    panel.client_records = [{"email": email} for email in clone_emails]
+    # Предыдущий cleanup удалил inbound, но упал до чистки клиентских записей.
+    panel.items.pop(9)
+
+    recovery = InboundManager(panel, "clone", 4, test_port=9443, recovery_dir=tmp_path)
+    asyncio.run(recovery.cleanup())
+
+    assert panel.deleted == []
+    assert panel.deleted_clients == [clone_emails]
+    assert not recovery.cleanup_pending
 
 
 def test_ambiguous_clone_ownership_is_preserved_for_recovery() -> None:

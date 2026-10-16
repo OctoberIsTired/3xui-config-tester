@@ -151,3 +151,29 @@ def test_create_inbound_malformed_ack_is_not_a_definite_rejection(body) -> None:
             await client.aclose()
 
     asyncio.run(scenario())
+
+
+def test_client_store_list_and_bulk_delete_payload() -> None:
+    requests: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == ThreeXUIClient.CLIENTS_LIST_PATH:
+            return httpx.Response(200, json={"success": True, "obj": [{"email": "a"}, {"email": "b"}]})
+        return httpx.Response(200, json={"success": True, "obj": {"deleted": 2, "skipped": []}})
+
+    async def scenario() -> None:
+        client = ThreeXUIClient({"url": "http://127.0.0.1"})
+        await client.client.aclose()
+        client.client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+        try:
+            assert await client.list_clients() == [{"email": "a"}, {"email": "b"}]
+            assert await client.delete_clients(["a", "b"]) == {"deleted": 2, "skipped": []}
+            assert await client.delete_clients([]) == {}
+            deletes = [item for item in requests if item.url.path == ThreeXUIClient.CLIENTS_BULK_DELETE_PATH]
+            assert len(deletes) == 1
+            assert json.loads(deletes[0].content) == {"emails": ["a", "b"], "keepTraffic": False}
+        finally:
+            await client.aclose()
+
+    asyncio.run(scenario())

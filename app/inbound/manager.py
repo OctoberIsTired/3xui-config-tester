@@ -6,9 +6,10 @@ import os
 import re
 import socket
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from app.api.three_xui import PanelAPIRejected
 from app.api.base import PanelClient
@@ -281,6 +282,41 @@ class InboundManager:
                 return False
         return True
 
+    def _clone_client_pattern(self) -> re.Pattern[str] | None:
+        if not self._manifest:
+            return None
+        marker = self._manifest.get("marker")
+        if not isinstance(marker, str):
+            return None
+        token = marker.removeprefix("[3xui-config-tester:").removesuffix("]")
+        if not re.fullmatch(r"[0-9a-f]{32}", token):
+            return None
+        return re.compile(rf"3xui-tester-{re.escape(token)}-\d+@example\.invalid")
+
+    async def _delete_clone_client_records(self) -> None:
+        """Best-effort removal of the clone's orphaned client records.
+
+        3x-ui keeps clients in a global store and leaves the records unattached
+        when their inbound is deleted (observed on v3.8). The panel exposes a
+        global client list plus a bulk delete; older panel versions and client
+        adapters without these endpoints simply skip the step. A failure here
+        must not fail the cleanup: the disposable inbound itself is already gone.
+        """
+        pattern = self._clone_client_pattern()
+        list_clients = getattr(self.client, "list_clients", None)
+        delete_clients = getattr(self.client, "delete_clients", None)
+        if pattern is None or not callable(list_clients) or not callable(delete_clients):
+            return
+        list_call = cast("Callable[[], Awaitable[list[dict[str, Any]]]]", list_clients)
+        delete_call = cast("Callable[[list[str]], Awaitable[dict[str, Any]]]", delete_clients)
+        try:
+            clients = await list_call()
+            emails = [str(item["email"]) for item in clients
+                      if isinstance(item, dict) and pattern.fullmatch(str(item.get("email", "")))]
+            await delete_call(emails)
+        except Exception:
+            return
+
     async def cleanup(self) -> None:
         if not self.cleanup_pending:
             return
@@ -325,6 +361,9 @@ class InboundManager:
                             break
                         if attempt == 1:
                             raise RuntimeError("Panel acknowledged clone deletion but the owned resource still exists")
+                # The inbound is gone either way; sweep the client records the
+                # panel left unattached (also covers an earlier partial cleanup).
+                await self._delete_clone_client_records()
             self.test_inbound_id = None
             self._save_manifest(state="cleaned", test_inbound_id=None)
         except BaseException:

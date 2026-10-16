@@ -25,6 +25,8 @@ class ThreeXUIClient:
     }
     XRAY_LOG_PATH = "/panel/api/server/xraylogs/{count}"
     REALITY_SCAN_PATH = "/panel/api/server/scanRealityTarget"
+    CLIENTS_LIST_PATH = "/panel/api/clients/list"
+    CLIENTS_BULK_DELETE_PATH = "/panel/api/clients/bulkDel"
 
     def __init__(self, panel: dict[str, Any], timeout: float = 10):
         url = str(panel.get("url", "")).rstrip("/")
@@ -104,6 +106,17 @@ class ThreeXUIClient:
 
     async def delete_inbound(self, inbound_id: int) -> None:
         self._obj(await self.client.post(self._url(f"/panel/api/inbounds/del/{inbound_id}"), json={}))
+
+    async def list_clients(self) -> list[dict[str, Any]]:
+        """Global client store (3x-ui v3.8+); includes records unattached to any inbound."""
+        return list(self._obj(await self.client.get(self._url(self.CLIENTS_LIST_PATH))))
+
+    async def delete_clients(self, emails: list[str]) -> dict[str, Any]:
+        """Delete client records by email; the panel drops their traffic rows too."""
+        if not emails:
+            return {}
+        payload = {"emails": list(emails), "keepTraffic": False}
+        return dict(self._obj(await self.client.post(self._url(self.CLIENTS_BULK_DELETE_PATH), json=payload)))
 
     async def server_status(self) -> dict[str, Any]:
         return dict(self._obj(await self.client.get(self._url("/panel/api/server/status"))))
