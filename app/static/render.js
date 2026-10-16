@@ -1048,7 +1048,9 @@ function syncActionAvailability() {
   document.querySelectorAll('[data-action="continue-run"]').forEach((button) => {
     button.disabled = blocked;
   });
-  document.querySelectorAll('[data-action="stop-run"]').forEach((button) => { button.disabled = !runActive; });
+  document.querySelectorAll('[data-action="stop-run"]').forEach((button) => {
+    button.disabled = !runActive || lastRunStatus === "stopping";
+  });
 }
 
 // Поллинг: запросы уходят только при активном запуске; renderRun() сам
@@ -1093,12 +1095,16 @@ async function changeDashboardPage(cursor) {
 }
 
 async function startRun() {
+  runClock.startedAt = null;
+  activeRunId = null;
+  selectedDashboardRunId = null;
+  dashboardCursor = 0;
+  // The start endpoint also prepares the plan before returning. Mark the run
+  // active immediately so the stop action stays available during preparation.
+  renderRun({status: "starting", completed: 0});
   await withBusy(["start-run", "stop-run", "poll-run"], async () => {
     try {
       notify("runResult", "Подготовка временного inbound и плана…", "ok");
-      runClock.startedAt = null;
-      selectedDashboardRunId = null;
-      dashboardCursor = 0;
       renderRun(await call("/api/run/start", "POST", read()));
       setTab("run");
       renderDashboard({ records: 0 });
@@ -1106,11 +1112,17 @@ async function startRun() {
     } catch (error) {
       notify("runResult", "Ошибка запуска: " + error.message);
       bindFieldErrors(error.message);
+      pollRun.manual = true;
+      await pollRun();
     }
   });
 }
 
 async function stopRun() {
+  if (!runActive || lastRunStatus === "stopping") return;
+  // Disable repeat clicks at once while allowing the stop request to run.
+  lastRunStatus = "stopping";
+  syncActionAvailability();
   await withBusy(["stop-run", "poll-run"], async () => {
     try {
       renderRun(await call("/api/run/stop", "POST", {}));
@@ -1118,6 +1130,8 @@ async function stopRun() {
       pollRun();
     } catch (error) {
       notify("runResult", "Ошибка остановки: " + error.message);
+      pollRun.manual = true;
+      await pollRun();
     }
   });
 }

@@ -147,7 +147,12 @@ function beginInflight() {
   inflightRequests += 1;
   document
     .querySelectorAll("[data-action]")
-    .forEach((button) => (button.disabled = true));
+    .forEach((button) => {
+      // A start request can take time while the server builds its plan. Keep
+      // stop available during that window so the backend can record the request.
+      if (button.dataset.action === "stop-run" && runActive && lastRunStatus !== "stopping") return;
+      button.disabled = true;
+    });
 }
 
 function endInflight() {
